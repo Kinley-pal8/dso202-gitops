@@ -1,0 +1,28 @@
+# =============================================================================
+# File        : cluster/kind-cluster.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit I 1.3 - local clusters (copied from Practical 1)
+# Create with : kind create cluster --name dso202-gitops --config cluster/kind-cluster.yaml
+# Purpose     : The single-node kind cluster used by this assignment.
+#
+# Changes from the Practical 1 / Assignment 1-3 file:
+#   - The name is dso202-gitops.
+#   - Only host port 30080 is mapped (the dev frontend NodePort). Host ports
+#     8080/8443 and the ingress-ready label are removed: no ingress controller
+#     is installed here, and host port 8080 is needed by
+#     'kubectl port-forward svc/argocd-server -n argocd 8080:443' (Task 2).
+#   - The node image is pinned by tag and digest (design rule 3), to the same
+#     image used in the earlier assignments.
+# =============================================================================
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: dso202-gitops
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+    extraPortMappings:
+      # Dev frontend: NodePort 30080 -> http://localhost:30080.
+      # Staging (30081) is deliberately not mapped; it is reached by port-forward.
+      - containerPort: 30080
+        hostPort: 30080
+        protocol: TCP
