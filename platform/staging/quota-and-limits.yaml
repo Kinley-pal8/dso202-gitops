@@ -1,0 +1,56 @@
+# =============================================================================
+# File        : platform/staging/quota-and-limits.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit I 1.5.1 - namespaces, ResourceQuota, LimitRange
+#               (carried over from Assignment 2)
+# Purpose     : Resource limits of the dso202-staging namespace. Part of the
+#               platform layer, delivered by platform-staging in the 'platform'
+#               project: the workload project (dso202) cannot create or
+#               change these kinds, so a chart commit cannot loosen them.
+# =============================================================================
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: task-tracker-limits
+  namespace: dso202-staging
+  labels:
+    app: task-tracker
+    dso202/environment: staging
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      # Lowered from Assignment 2 (50m / 64Mi): the smoke-test Job (Listing
+      # 13) requests 10m CPU and 16Mi memory, and a LimitRange minimum applies
+      # to requests as well as limits, so the old minimum rejected that Pod.
+      min:
+        cpu: "10m"
+        memory: "16Mi"
+      max:
+        cpu: "1"
+        memory: "1Gi"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: task-tracker-quota
+  namespace: dso202-staging
+  labels:
+    app: task-tracker
+    dso202/environment: staging
+spec:
+  # Requires requests and limits on every container (chart contract C7).
+  # Sized for three tiers, one extra Pod during a rolling update, and the
+  # smoke-test Job.
+  hard:
+    requests.cpu: "1"
+    requests.memory: "1Gi"
+    limits.cpu: "3"
+    limits.memory: "2Gi"
+    pods: "20"
+    persistentvolumeclaims: "2"   # the StatefulSet's volumeClaimTemplate claims one
