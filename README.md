@@ -1,0 +1,195 @@
+<!--
+=============================================================================
+File        : README.md
+Assignment  : DSO202 Assignment 4 - GitOps Delivery of the Task Tracker with Argo CD
+Descriptor  : Unit IV 4.1-4.4, applied to the deliverables of Assignments 1-3
+Purpose     : What this repository is, the pinned versions, how to build the
+              whole environment from an empty machine, how to clean up, how
+              credentials are handled, and the written answers Q1-Q6.
+=============================================================================
+-->
+# dso202-gitops
+
+This repository holds the whole desired state of the DSO202 Task Tracker: the Argo CD installation, the Argo CD projects and Applications, the per-environment platform layer, the Helm chart, and the environment values. An Argo CD instance inside the cluster reads it and makes the cluster match it. After bootstrap, nobody runs `kubectl apply` or `helm install`: a change to the system is a commit.
+
+| Environment | Namespace | Follows | Sync | Frontend |
+|---|---|---|---|---|
+| dev | `dso202-dev` | branch `main` | automated, prune, self-heal | `http://localhost:30080` |
+| staging | `dso202-staging` | a Git tag (`v1.0.0`, ...) | manual | `kubectl port-forward -n dso202-staging svc/frontend 8081:8080`, then `http://localhost:8081` |
+
+Command output for every task is in [`docs/evidence.md`](docs/evidence.md).
+
+## Pinned versions
+
+| Component | Version | Where it is pinned |
+|---|---|---|
+| Argo CD | v3.5.6 | `bootstrap/argocd/kustomization.yaml` (install manifest URL tag) |
+| `argocd` CLI | v3.5.6 | local tool, matches the server |
+| Sealed Secrets Helm chart | 2.20.0 | `argocd/applications/sealed-secrets.yaml` (`targetRevision`) |
+| Sealed Secrets controller | 0.40.0 | installed by chart 2.20.0 |
+| `kubeseal` CLI | v0.40.0 | local tool, matches the controller |
+| kind / node image | kind v0.32.0, `kindest/node:v1.36.1@sha256:3489c767...` | `cluster/kind-cluster.yaml` (node image pinned by digest) |
+| kubectl | v1.36.3 | local tool |
+| Helm | v4.3.1 | local tool |
+| Task Tracker images | `sarojsanyasi/dso202-{db,backend,frontend}:1.0` | `environments/<env>/values.yaml` |
+| Smoke-test image | `busybox:1.37` | `charts/tasktracker/templates/smoke-test-job.yaml` |
+
+## Layout
+
+```text
+cluster/kind-cluster.yaml        the kind cluster (single node, host port 30080 mapped)
+bootstrap/argocd/                Argo CD install: upstream v3.5.6 manifest + two ConfigMap patches   (applied by hand)
+bootstrap/root/                  the 'platform' AppProject and the root Application                (applied by hand)
+argocd/projects/                 the 'dso202' workload AppProject                                 (delivered by root)
+argocd/applications/             sealed-secrets, platform-{dev,staging}, tasktracker-{dev,staging} (delivered by root)
+platform/{dev,staging}/          namespace, quota + limits, RBAC, sealed credentials               (delivered by platform-*)
+charts/tasktracker/              the Assignment 3 chart, reduced to the workload layer             (delivered by tasktracker-*)
+environments/{dev,staging}/      values that differ per environment
+docs/evidence.md                 command output per task
+```
+
+Sync waves in the root Application: `dso202` project (-3), then `sealed-secrets` (-2), then `platform-dev`/`platform-staging` (-1), then `tasktracker-dev`/`tasktracker-staging` (0). Inside the chart: database (0), backend (1), frontend (2), then the PostSync smoke test.
+
+## Build the whole environment from an empty machine
+
+Prerequisites: Docker, kind, kubectl, Helm, git, `argocd` v3.5.6 and `kubeseal` v0.40.0 on the PATH. You also need the sealing-key backup `../dso202-keys/sealing-key.backup.yaml`, which is kept outside this repository.
+
+```bash
+git clone https://github.com/Kinley-pal8/dso202-gitops.git
+cd dso202-gitops
+
+# 1. Cluster (host port 30080 must be free)
+kind create cluster --name dso202-gitops --config cluster/kind-cluster.yaml
+
+# 2. Restore the sealing key BEFORE the controller exists, so it reuses the key
+kubectl create namespace sealed-secrets
+kubectl apply -f ../dso202-keys/sealing-key.backup.yaml
+
+# 3. Install Argo CD (server-side: the ApplicationSet CRD is too large for client-side apply)
+kubectl apply -k bootstrap/argocd --server-side --force-conflicts
+kubectl wait --for=condition=Available deployment --all -n argocd --timeout=600s
+kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=600s
+
+# 4. Hand over to Git: the platform project and the root Application
+kubectl apply -f bootstrap/root
+
+# 5. Watch the Applications appear in wave order
+kubectl get applications -n argocd -w
+
+# 6. Sign in, then sync staging (manual by design)
+kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+argocd admin initial-password -n argocd
+argocd login localhost:8080 --username admin --insecure
+argocd app sync tasktracker-staging
+```
+
+If Docker Hub refuses an image (rate limit, or "no match for platform in manifest"), load the issued images from the host. This does not change any tag:
+
+```bash
+for i in sarojsanyasi/dso202-db:1.0 sarojsanyasi/dso202-backend:1.0 sarojsanyasi/dso202-frontend:1.0; do
+  kind load docker-image "$i" --name dso202-gitops
+done
+```
+
+## Cleanup
+
+```bash
+# Stop any port-forwards, then delete the cluster (removes everything, including database contents)
+kind delete cluster --name dso202-gitops
+# The repository and ../dso202-keys/ are untouched; keep the key backup if the
+# environment is to be rebuilt with the same SealedSecrets.
+```
+
+Do not delete the `root` Application to "clean up" inside a running cluster. Its finalizer cascades to every child Application and every workload.
+
+## How credentials are handled
+
+- The chart never renders a `Secret`. Pods read `tasktracker-credentials` through `existingSecret` (chart contract C3).
+- That Secret is created in each namespace by the Sealed Secrets controller from `platform/<env>/tasktracker-credentials.sealed.yaml`. That file holds ciphertext produced by `kubeseal` with this cluster's public key, so it is safe to commit.
+- The plaintext input (`secrets-plain/<env>.env`) is git-ignored and never committed. It was piped through `kubectl create secret --dry-run=client -o yaml | kubeseal`, so the plaintext Secret was never written to disk. Dev and staging use different passwords and are sealed separately: strict scope ties each file to its own name and namespace.
+- The sealing key (the controller's private key) is backed up to `../dso202-keys/sealing-key.backup.yaml` with mode 600, outside the repository. It is the one piece of state that is neither in Git nor reproducible.
+- Proof that nothing leaked: a `git log -p --all -S'<value>'` search for every credential value returns nothing (Task 4, step 7 in the evidence).
+
+## Deviations from the brief and from earlier assignments
+
+| What | Why |
+|---|---|
+| `cluster/kind-cluster.yaml` maps only host port 30080, has no `ingress-ready` label, and pins the node image by digest | No ingress controller is used. Host port 8080 is needed for the Argo CD port-forward. Design rule 3 requires pinned versions. |
+| LimitRange `min` lowered from 50m/64Mi (Assignment 2) to 10m/16Mi | The smoke-test Job (Listing 13) requests 10m/16Mi, and a LimitRange minimum applies to requests too, so the old minimum rejected the hook Pod. |
+| The DbBackup operator, its CRD, and the cluster-scoped ClusterRoles of Assignment 2/3 are not carried over | They are cluster-scoped, which the `dso202` project forbids (C8). Nothing in this assignment uses them. |
+| Chart objects keep fixed names (`db`, `backend`, `frontend`) | The backend reaches the database at host `db`, and the release name is fixed to `tasktracker` in both Applications. The smoke test calls `http://backend:8080/api/tasks`. |
+| The `1.0` images were loaded into kind from the host | Docker Hub returned "no match for platform in manifest" for `sarojsanyasi/dso202-db:1.0`. Section 13 of the brief prescribes this remedy. |
+
+## Written answers
+
+### Q1: Why is `platform` applied by hand while `dso202` is created by the root, and what is the risk if `dso202` may deploy into `argocd`?
+
+The root Application has to belong to a project, and that project must already exist when the root is created, or Argo CD rejects it. `platform` is therefore part of the bootstrap: it is the one project that must exist before Git can deliver anything. `platform` is also the administrator-level project. It may deploy any kind, including cluster-scoped ones, into `argocd`, `sealed-secrets` and both workload namespaces, so it deliberately lives in the hand-applied layer. Only someone with cluster-admin access to `kubectl` can change it.
+
+`dso202` is an ordinary, narrow project, so it is declared like everything else: a file under `argocd/projects/`, created and kept in shape by the root (sync wave -3, before any Application refers to it). A hand edit to it is reverted by self-heal, and a change to it is a reviewed commit.
+
+If `dso202` were allowed to deploy into `argocd`, a commit to the chart could add an `Application` or `AppProject` manifest. Argo CD would create that object in its own namespace, where Applications and AppProjects are read as configuration. The new Application could name the `platform` project, or a new project with `*` permissions, and so deploy anything anywhere, including cluster-scoped kinds. The workload project would then be able to widen its own permissions. That is administrator capability, and it defeats the least-privilege split in section 6.4.
+
+### Q2: What does strict scope prevent, and what is lost, and what must be done, if the sealing key is lost?
+
+With strict scope (the default), the name and namespace of the Secret are part of the encrypted payload. The ciphertext in `platform/dev/tasktracker-credentials.sealed.yaml` therefore decrypts only as a Secret named `tasktracker-credentials` in `dso202-dev`. This prevents someone who can create objects in another namespace from copying the SealedSecret there, or renaming it, to get the dev credentials decrypted for a workload of their choosing. It is also why dev and staging are sealed separately.
+
+If the sealing key is lost, for example because the cluster is deleted and there is no backup or the backup is older than a key renewal:
+- **What is lost:** every SealedSecret in Git becomes permanently undecryptable. It was encrypted to a public key whose private half no longer exists. The Git history is intact but useless for these files.
+- **What still works:** Secrets that the controller already created in a still-running cluster keep working until they are deleted.
+- **What must be done:**
+  1. Let the new controller generate a new key pair.
+  2. Recover the plaintext credentials from the password manager, or rotate them: create new passwords and change them in PostgreSQL.
+  3. Re-seal every environment with `kubeseal` against the new controller and commit the new files.
+  4. Take a fresh backup of the new key.
+- **If the database password changed:** the database contents, which live on the PVC, have to be migrated or re-initialised to accept the new password.
+
+### Q3: What is the difference between `Synced` and `Healthy`? Example of `Synced` but not `Healthy`.
+
+- **Sync status** compares desired state with live state. `Synced` means every object rendered from Git exists in the cluster with the same spec.
+- **Health** describes whether the live objects are working. A Deployment is `Healthy` only when its new ReplicaSet has the desired number of available Pods. A StatefulSet is `Healthy` when its rolling update is complete and the Pods are ready.
+
+The two are independent. Argo CD can apply a manifest perfectly and still have the result not work.
+
+Example from this assignment. When the Sealed Secrets Application was first created (Task 4), it was polled every 10 s:
+
+```text
+2 Synced/Progressing
+...
+6 Synced/Progressing
+7 Synced/Healthy
+```
+
+For about a minute, the Deployment, CRD and Service existed exactly as declared (`Synced`), but the controller Pod was still pulling its image and was not ready (`Progressing`).
+
+The same thing happened in dev in Task 5. The objects were applied, but `db-0` was in `ImagePullBackOff`, so `tasktracker-dev` stayed `Progressing` until the image was available. Because of the restored Application health check, `root` showed `Synced / Progressing` at the same time (Task 5 watch in the evidence).
+
+To provoke a lasting case, commit a non-existent image tag to `environments/dev/values.yaml`. The Application becomes `Synced`, because the Deployment matches Git. After `progressDeadlineSeconds` (120 s, contract C6) it becomes `Degraded`, because the new Pods never become ready. Task 7 does exactly this with the faulty backend release.
+
+### Q4: What does Argo CD RBAC control, what does Kubernetes RBAC control, and where is each configured? What would change with SSO?
+
+| | Argo CD RBAC | Kubernetes RBAC (Assignment 2) |
+|---|---|---|
+| Controls | What an Argo CD user or group may do through the Argo CD API server, UI and CLI: get, sync, create or delete Applications, read projects, read logs, exec, and so on, scoped by project and Application (`dso202/*`). | What an identity (user, group or ServiceAccount) may do through the Kubernetes API: verbs on resources in a namespace or cluster-wide. |
+| Configured in | `argocd-rbac-cm` (`policy.csv`, `policy.default`), here `bootstrap/argocd/argocd-rbac-cm-patch.yaml`. Accounts in `argocd-cm` (`accounts.reviewer`). Also project roles in AppProjects. | `Role`/`ClusterRole` and `RoleBinding`/`ClusterRoleBinding` objects, here `platform/<env>/rbac.yaml`. |
+| Enforced by | the Argo CD API server | the Kubernetes API server |
+
+They are layered. Argo CD's controller acts in the cluster with its own powerful ServiceAccount, so a user who may `sync` in Argo CD changes the cluster without having any Kubernetes RBAC of their own. Conversely, `viewer`'s Kubernetes Role gives that ServiceAccount nothing in Argo CD. In this task `reviewer` exists only in Argo CD.
+
+With SSO (OIDC or Dex connected to the organisation's identity provider), users would no longer be local accounts. `accounts.reviewer: login` and `argocd account update-password` would go away. `policy.csv` would grant permissions to identity-provider groups (or users), read from the token's `groups` claim, instead of to local account names. For example, a role is defined once, then a group is bound to it:
+
+```text
+p, role:reviewer, applications, get, dso202/*, allow
+p, role:reviewer, logs, get, dso202/*, allow
+g, dso202-reviewers, role:reviewer
+```
+
+Granting access then becomes a membership change in the identity provider, not an edit to `policy.csv`. The OIDC settings themselves (`oidc.config` or `dex.config`, plus `url`) would go in `argocd-cm`, and `scopes` in `argocd-rbac-cm` would name the claim that carries the groups.
+
+### Q5: Why is `argocd app rollback` refused, what is the GitOps equivalent, and why is `git revert` preferred?
+
+*Pending: answered after Task 7, which waits for the tutor-issued `1.1` images.*
+
+### Q6: (a) Single repository: two advantages, two disadvantages. (b) What is not under GitOps control after the rebuild?
+
+*Pending: answered after Task 9.*
