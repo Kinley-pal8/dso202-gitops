@@ -1,0 +1,101 @@
+# =============================================================================
+# File        : charts/tasktracker/values.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit III 3.2 - Helm values; Unit IV 4.3 - environments
+# Purpose     : Chart defaults only. Everything that differs between dev and
+#               staging lives in environments/<env>/values.yaml (design rule 2),
+#               so no template ever tests which environment it is rendering.
+# =============================================================================
+
+# Environment name, used only as a label. No default: the chart refuses to
+# render until an environment file sets it.
+environment: ""
+
+# C3: the chart never renders a Secret. Every Pod reads its credentials from
+# an existing Secret whose name is this value. In this repository the Secret
+# is created by the Sealed Secrets controller from
+# platform/<env>/tasktracker-credentials.sealed.yaml. Required; no default.
+# Keys expected: DB_USER, DB_PASSWORD, POSTGRES_USER, POSTGRES_PASSWORD.
+existingSecret: ""
+
+# C6: how long a Deployment may take to make progress before Kubernetes marks
+# it failed (and Argo CD reports Degraded). The Kubernetes default is 600 s.
+progressDeadlineSeconds: 120
+
+# Pull policy shared by all tiers. IfNotPresent is safe because every tag is
+# an exact, immutable release tag (design rule 3).
+imagePullPolicy: IfNotPresent
+
+database:
+  # C1: image repository and tag are values. Tags are quoted strings: an
+  # unquoted 1.0 is a YAML number and would render as ":1".
+  image:
+    repository: sarojsanyasi/dso202-db
+    tag: "1.0"
+  name: taskdb
+  port: 5432
+  # Size of the claim created from volumeClaimTemplates. Kubernetes cannot
+  # resize this on an existing StatefulSet.
+  storage: 1Gi
+  # C2: extra environment variables for the database container, rendered into
+  # the db-config ConfigMap. Adding one is a values change only.
+  config: {}
+  # C7: requests and limits, required by the namespace ResourceQuota.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+backend:
+  image:
+    repository: sarojsanyasi/dso202-backend
+    tag: "1.0"
+  replicaCount: 1
+  # C2: environment variables of the backend container. DB_HOST, DB_PORT and
+  # DB_NAME are derived from the database section; everything listed here is
+  # added to the backend-config ConfigMap, so a new variable needs a values
+  # change only (Task 7, fix-forward).
+  config:
+    APP_PORT: "8080"
+    CORS_ORIGIN: "*"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+frontend:
+  image:
+    repository: sarojsanyasi/dso202-frontend
+    tag: "1.0"
+  replicaCount: 1
+  # C2: environment variables of the frontend container (frontend-config).
+  # BACKEND_URL is baked into config.js when the container starts. Empty means
+  # "same origin as the page".
+  config:
+    BACKEND_URL: ""
+  # C10: the frontend Service is a NodePort and the port number is a value.
+  # No default: each environment must choose its own (30080 dev, 30081 staging).
+  service:
+    port: 8080
+    nodePort: null
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# C9: the Ingress template is kept from Assignment 3 but disabled. No ingress
+# controller is installed in this assignment, and Ingress is not on the
+# dso202 project's whitelist.
+ingress:
+  enabled: false
+  className: nginx
+  host: ""

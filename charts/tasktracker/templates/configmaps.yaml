@@ -1,0 +1,55 @@
+# =============================================================================
+# File        : charts/tasktracker/templates/configmaps.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit I 1.5.3 - ConfigMaps; Unit III 3.2 - values
+# Purpose     : One ConfigMap per tier, rendered entirely from values (C2).
+#               Each container loads its ConfigMap with envFrom, so a new
+#               environment variable is a values change, never a template
+#               change. Credentials are not here: they come from the Secret
+#               named by existingSecret (C3).
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-config
+  labels:
+    {{- include "tasktracker.labels" (list . "database") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "database" | nindent 4 }}
+data:
+  # POSTGRES_DB must equal the backend's DB_NAME; both come from one value.
+  POSTGRES_DB: {{ .Values.database.name | quote }}
+  PGDATA: /var/lib/postgresql/data/pgdata
+  {{- range $key, $value := .Values.database.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  labels:
+    {{- include "tasktracker.labels" (list . "backend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "backend" | nindent 4 }}
+data:
+  # The database's headless Service name, in the same namespace.
+  DB_HOST: db
+  DB_PORT: {{ .Values.database.port | quote }}
+  DB_NAME: {{ .Values.database.name | quote }}
+  {{- range $key, $value := .Values.backend.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  labels:
+    {{- include "tasktracker.labels" (list . "frontend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "frontend" | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.frontend.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

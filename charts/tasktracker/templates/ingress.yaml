@@ -1,0 +1,41 @@
+{{- /*
+=============================================================================
+File        : charts/tasktracker/templates/ingress.yaml
+Assignment  : DSO202 Assignment 4
+Descriptor  : Unit II - Ingress (from Assignment 3); chart contract C9
+Purpose     : The Assignment 3 Ingress, kept but disabled by default (C9). No
+              ingress controller is installed in this assignment, and Ingress
+              is not on the dso202 project's whitelist, so enabling it would
+              be refused at sync time until the whitelist is extended.
+=============================================================================
+*/}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tasktracker
+  labels:
+    {{- include "tasktracker.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "frontend" | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ required "ingress.host must be set when ingress.enabled is true" .Values.ingress.host }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: {{ .Values.frontend.service.port }}
+{{- end }}

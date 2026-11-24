@@ -1,0 +1,96 @@
+# =============================================================================
+# File        : charts/tasktracker/templates/database.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit II 2.1 - StatefulSets; Unit IV 4.3.2 - sync waves
+# Purpose     : The PostgreSQL tier: a headless Service and a StatefulSet in
+#               sync wave "0" (C5), so it is Healthy before the backend starts.
+# Note        : The PersistentVolumeClaim comes from volumeClaimTemplates and
+#               is created by the StatefulSet controller, not by Argo CD, so
+#               it is not on the project whitelist and is not pruned.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  labels:
+    {{- include "tasktracker.labels" (list . "database") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "database" | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "tasktracker.selectorLabels" (list . "database") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: {{ .Values.database.port }}
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  labels:
+    {{- include "tasktracker.labels" (list . "database") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "database" | nindent 4 }}
+spec:
+  serviceName: db
+  replicas: 1
+  # RollingUpdate (the default) is stated because Argo CD cannot report a
+  # StatefulSet with OnDelete as Healthy.
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "tasktracker.selectorLabels" (list . "database") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tasktracker.labels" (list . "database") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "tasktracker.configChecksum" (list . "database") }}
+    spec:
+      containers:
+        - name: postgres
+          # C1: repository and tag are values.
+          image: "{{ .Values.database.image.repository }}:{{ .Values.database.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.database.port }}
+          envFrom:
+            # C2: non-secret settings.
+            - configMapRef:
+                name: db-config
+          env:
+            # C3: credentials from the existing Secret, never from values.
+            {{- range $key := list "POSTGRES_USER" "POSTGRES_PASSWORD" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tasktracker.secretName" $ }}
+                  key: {{ $key }}
+            {{- end }}
+          # C4: ready only when PostgreSQL accepts connections.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 5
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/postgresql/data
+          # C7: requests and limits.
+          resources:
+            {{- toYaml .Values.database.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: db-data
+        labels:
+          app: task-tracker
+          tier: database
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.database.storage }}

@@ -1,0 +1,91 @@
+# =============================================================================
+# File        : charts/tasktracker/templates/backend.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit I 1.2.5 - Deployments and Services; Unit II 2.3 - RBAC
+#               (ServiceAccount); Unit IV 4.3.2 - sync waves, 4.3.3 - health
+# Purpose     : The API tier in sync wave "1" (C5): a ServiceAccount with no
+#               permissions, a ClusterIP Service, and a Deployment.
+# Note        : The Service name 'backend' is used by the smoke test
+#               (smoke-test-job.yaml) and by the frontend.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # Identity only. No Role is bound to it, so the backend can authenticate to
+  # the API server but is authorised to do nothing (Assignment 2).
+  name: backend-sa
+  labels:
+    {{- include "tasktracker.labels" (list . "backend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "backend" | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    {{- include "tasktracker.labels" (list . "backend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "backend" | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "tasktracker.selectorLabels" (list . "backend") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    {{- include "tasktracker.labels" (list . "backend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "backend" | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  # C6: a stuck rollout is reported as failed (Degraded) after 120 s, not 600 s.
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  selector:
+    matchLabels:
+      {{- include "tasktracker.selectorLabels" (list . "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tasktracker.labels" (list . "backend") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "tasktracker.configChecksum" (list . "backend") }}
+    spec:
+      serviceAccountName: backend-sa
+      containers:
+        - name: backend
+          # C1: repository and tag are values.
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # C2: every non-secret variable, rendered from values.
+            - configMapRef:
+                name: backend-config
+          env:
+            # C3: credentials from the existing Secret.
+            {{- range $key := list "DB_USER" "DB_PASSWORD" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tasktracker.secretName" $ }}
+                  key: {{ $key }}
+            {{- end }}
+          # C4: GET /api/status, as required by the contract.
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 5
+          # C7: requests and limits.
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}

@@ -1,0 +1,13 @@
+{{- /*
+File        : charts/tasktracker/templates/NOTES.txt
+Assignment  : DSO202 Assignment 4
+Purpose     : Text printed by 'helm install'. Argo CD does not show it; it is
+              kept for anyone rendering or installing the chart by hand.
+*/ -}}
+Task Tracker ({{ include "tasktracker.environment" . }}) in namespace {{ .Release.Namespace }}.
+
+Credentials are read from the existing Secret "{{ include "tasktracker.secretName" . }}"
+(keys DB_USER, DB_PASSWORD, POSTGRES_USER, POSTGRES_PASSWORD); this chart never creates it.
+
+Frontend: NodePort {{ .Values.frontend.service.nodePort }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/frontend 8081:{{ .Values.frontend.service.port }}

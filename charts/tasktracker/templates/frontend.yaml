@@ -1,0 +1,71 @@
+# =============================================================================
+# File        : charts/tasktracker/templates/frontend.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit I 1.2.5 - Deployments and NodePort Services;
+#               Unit IV 4.3.2 - sync waves
+# Purpose     : The static UI tier in sync wave "2" (C5): a NodePort Service
+#               whose port is a value (C10) and a Deployment.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    {{- include "tasktracker.labels" (list . "frontend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "frontend" | nindent 4 }}
+spec:
+  # C10: NodePort. In dev, 30080 is mapped to the host by cluster/kind-cluster.yaml;
+  # in staging, 30081 is not mapped and the frontend is reached by port-forward.
+  type: NodePort
+  selector:
+    {{- include "tasktracker.selectorLabels" (list . "frontend") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.frontend.service.port }}
+      targetPort: http
+      nodePort: {{ required "frontend.service.nodePort must be set per environment" .Values.frontend.service.nodePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    {{- include "tasktracker.labels" (list . "frontend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "frontend" | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  # C6: a stuck rollout is reported as failed after 120 s.
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  selector:
+    matchLabels:
+      {{- include "tasktracker.selectorLabels" (list . "frontend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tasktracker.labels" (list . "frontend") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "tasktracker.configChecksum" (list . "frontend") }}
+    spec:
+      containers:
+        - name: frontend
+          # C1: repository and tag are values.
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # C2: settings rendered from values.
+            - configMapRef:
+                name: frontend-config
+          # C4: ready once nginx serves the page.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+          # C7: requests and limits.
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
