@@ -1638,7 +1638,349 @@ All six Applications ended `Synced / Healthy`.
 
 ## Task 8: Drift, Pruning and Project Guardrails
 
-**Pending.** Done after Task 7, as the brief requires the tasks in order.
+All four predictions were written to a file before any drill command was run (2026-11-27 23:35:28 +0600). They are reproduced unchanged at the start of each drill.
+
+### Drill 1: drift in dev is reverted
+
+**Prediction.** Self-heal reverts it. The Deployment returns to 1 replica within a few seconds. The two extra Pods start and are then terminated, and tasktracker-dev ends Synced/Healthy without anyone syncing.
+
+The watches were started 3 s before the change.
+
+```text
+$ kubectl get deployment -n dso202-dev
+NAME       READY   UP-TO-DATE   AVAILABLE   AGE
+backend    1/1     1            1           2d22h
+frontend   1/1     1            1           2d22h
+$ kubectl scale deployment/backend -n dso202-dev --replicas=3    # at 23:35:38
+deployment.apps/backend scaled
+
+$ kubectl get deployment/backend -n dso202-dev -w    (local time)
+23:35:35 NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+23:35:35 backend   1/1     1            1           2d22h
+23:35:38 backend   1/3     1            1           2d22h
+23:35:38 backend   1/3     1            1           2d22h
+23:35:38 backend   1/3     1            1           2d22h
+23:35:38 backend   1/3     3            1           2d22h
+23:35:38 backend   1/1     3            1           2d22h
+23:35:38 backend   1/1     3            1           2d22h
+23:35:38 backend   1/1     3            1           2d22h
+23:35:39 backend   1/1     1            1           2d22h
+23:36:09 backend   1/1     1            1           2d22h
+23:36:09 backend   1/1     1            1           2d22h
+
+$ kubectl get pods -n dso202-dev -l tier=backend -w    (local time)
+23:35:35 NAME                      READY   STATUS    RESTARTS   AGE
+23:35:35 backend-7db9c4769-zn5pz   1/1     Running   0          35m
+23:35:38 backend-7db9c4769-hwcg9   0/1     Pending   0          0s
+23:35:38 backend-7db9c4769-hwcg9   0/1     Pending   0          0s
+23:35:38 backend-7db9c4769-xldl5   0/1     Pending   0          0s
+23:35:38 backend-7db9c4769-xldl5   0/1     Pending   0          0s
+23:35:38 backend-7db9c4769-hwcg9   0/1     ContainerCreating   0          0s
+23:35:38 backend-7db9c4769-xldl5   0/1     ContainerCreating   0          0s
+23:35:38 backend-7db9c4769-xldl5   0/1     Terminating         0          0s
+23:35:38 backend-7db9c4769-hwcg9   0/1     Terminating         0          0s
+23:35:39 backend-7db9c4769-xldl5   0/1     Terminating         0          1s
+23:35:39 backend-7db9c4769-hwcg9   0/1     Terminating         0          1s
+23:35:39 backend-7db9c4769-xldl5   0/1     Terminating         0          1s
+23:35:39 backend-7db9c4769-hwcg9   0/1     Terminating         0          1s
+23:35:44 backend-7db9c4769-xldl5   1/1     Terminating         0          6s
+23:35:44 backend-7db9c4769-hwcg9   1/1     Terminating         0          6s
+23:36:09 backend-7db9c4769-hwcg9   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-xldl5   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-hwcg9   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-xldl5   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-xldl5   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-xldl5   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-hwcg9   0/1     Error               0          31s
+23:36:09 backend-7db9c4769-hwcg9   0/1     Error               0          31s
+
+$ argocd app get tasktracker-dev    # at 23:36:22
+Sync Status:        Synced to main (2df4627)
+Health Status:      Healthy
+apps   Deployment      dso202-dev  backend                 Synced  Healthy        deployment.apps/backend configured
+apps   Deployment      dso202-dev  frontend                Synced  Healthy        
+
+$ kubectl get events -n dso202-dev --field-selector involvedObject.name=backend --sort-by=.lastTimestamp | tail -4
+36m         Normal   ScalingReplicaSet   deployment/backend   Scaled up replica set backend-7db9c4769 from 0 to 1
+36m         Normal   ScalingReplicaSet   deployment/backend   Scaled down replica set backend-d666f4fd from 1 to 0
+44s         Normal   ScalingReplicaSet   deployment/backend   Scaled up replica set backend-7db9c4769 from 1 to 3
+44s         Normal   ScalingReplicaSet   deployment/backend   Scaled down replica set backend-7db9c4769 from 3 to 1
+```
+
+**Observation.** `kubectl scale` set the replicas to 3 at 23:35:38. In the same second, the Deployment went back to `1/1` and the ReplicaSet was "Scaled down ... from 3 to 1". The two new Pods were sent to `Terminating` before they finished `ContainerCreating`, and the Application stayed `Synced / Healthy`. The extra Pods took about 30 s to disappear and ended in `Error`. That is the termination grace period: the Node.js process does not handle SIGTERM, so the kubelet killed it after the 30 s grace period. It is not a second failure.
+
+**Prediction held.** The reversion was faster than predicted, under one second. `selfHeal: true` in `tasktracker-dev` makes the controller treat any difference from Git as drift and re-apply Git at once. Its watch on the Deployment fires immediately, so no 60 s poll is involved (principle 4: continuously reconciled).
+
+### Drill 2: drift in staging is reported, not reverted
+
+**Prediction.** Nothing reverts it. Staging has no automated sync, so all 3 replicas keep running. tasktracker-staging reports OutOfSync, and argocd app diff shows replicas 1 (Git) against 3 (live). Only a manual sync brings it back to 1.
+
+```text
+$ kubectl scale deployment/backend -n dso202-staging --replicas=3    # at 23:36:32
+deployment.apps/backend scaled
+
+$ kubectl get deployment/backend -n dso202-staging -w    (local time, 40 s)
+23:36:30 NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+23:36:30 backend   1/1     1            1           2d22h
+23:36:32 backend   1/3     1            1           2d22h
+23:36:32 backend   1/3     1            1           2d22h
+23:36:32 backend   1/3     1            1           2d22h
+23:36:32 backend   1/3     3            1           2d22h
+23:36:38 backend   2/3     3            2           2d22h
+23:36:38 backend   3/3     3            3           2d22h
+
+$ kubectl get pods -n dso202-staging -l tier=backend    # at 23:37:12
+NAME                       READY   STATUS    RESTARTS   AGE
+backend-586d6f8bb7-4ltvg   1/1     Running   0          40s
+backend-586d6f8bb7-bxmkh   1/1     Running   0          9m12s
+backend-586d6f8bb7-qwr2b   1/1     Running   0          40s
+
+$ argocd app get tasktracker-staging --refresh
+Namespace:          dso202-staging
+  Target:           v1.2.0
+  Helm Values:      ../../environments/staging/values.yaml
+Sync Policy:        Manual
+Sync Status:        OutOfSync from v1.2.0 (95717b8)
+Health Status:      Healthy
+
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-staging  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-staging  backend-config          Synced                        configmap/backend-config configured
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-staging  backend                 OutOfSync  Healthy            deployment.apps/backend configured
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend unchanged
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+$ argocd app diff tasktracker-staging
+
+===== apps/Deployment dso202-staging/backend ======
+176c176
+<   replicas: 3
+---
+>   replicas: 1
+(exit code 1)
+
+$ argocd app sync tasktracker-staging    # at 23:37:13
+TIMESTAMP                  GROUP        KIND       NAMESPACE                      NAME      STATUS    HEALTH        HOOK  MESSAGE
+2026-11-27T23:37:14+06:00          ConfigMap      dso202-staging        backend-config      Synced                        
+2026-11-27T23:37:14+06:00            Service      dso202-staging               backend      Synced   Healthy              
+2026-11-27T23:37:14+06:00            Service      dso202-staging                    db      Synced   Healthy              
+2026-11-27T23:37:14+06:00   apps  Deployment      dso202-staging               backend    OutOfSync  Healthy              
+2026-11-27T23:37:14+06:00   apps  StatefulSet     dso202-staging                    db      Synced   Healthy              
+2026-11-27T23:37:14+06:00  batch         Job      dso202-staging  tasktracker-smoke-test             Healthy              
+2026-11-27T23:37:14+06:00          ConfigMap      dso202-staging             db-config      Synced                        
+2026-11-27T23:37:14+06:00          ConfigMap      dso202-staging       frontend-config      Synced                        
+2026-11-27T23:37:14+06:00            Service      dso202-staging              frontend      Synced   Healthy              
+2026-11-27T23:37:14+06:00         ServiceAccount  dso202-staging            backend-sa      Synced                        
+2026-11-27T23:37:14+06:00   apps  Deployment      dso202-staging              frontend      Synced   Healthy              
+2026-11-27T23:37:17+06:00   apps  StatefulSet  dso202-staging                    db    Synced  Healthy              statefulset.apps/db configured
+2026-11-27T23:37:17+06:00          ConfigMap   dso202-staging             db-config    Synced                       configmap/db-config unchanged
+2026-11-27T23:37:17+06:00            Service   dso202-staging                    db    Synced  Healthy              service/db unchanged
+2026-11-27T23:37:17+06:00   apps  Deployment  dso202-staging               backend    Synced  Healthy              
+2026-11-27T23:37:19+06:00          ConfigMap      dso202-staging        backend-config    Synced                       configmap/backend-config unchanged
+2026-11-27T23:37:19+06:00            Service      dso202-staging               backend    Synced  Healthy              service/backend unchanged
+2026-11-27T23:37:19+06:00   apps  Deployment      dso202-staging               backend    Synced  Healthy              deployment.apps/backend configured
+2026-11-27T23:37:19+06:00   apps  StatefulSet     dso202-staging                    db    Synced  Healthy              statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+2026-11-27T23:37:19+06:00         ServiceAccount  dso202-staging            backend-sa    Synced                       serviceaccount/backend-sa unchanged
+2026-11-27T23:37:21+06:00          ConfigMap  dso202-staging       frontend-config    Synced                       configmap/frontend-config unchanged
+2026-11-27T23:37:21+06:00            Service  dso202-staging              frontend    Synced  Healthy              service/frontend unchanged
+2026-11-27T23:37:21+06:00   apps  Deployment  dso202-staging              frontend    Synced  Healthy              deployment.apps/frontend unchanged
+2026-11-27T23:37:21+06:00  batch         Job  dso202-staging  tasktracker-smoke-test   Running   Synced    PostSync  job.batch/tasktracker-smoke-test created
+2026-11-27T23:37:26+06:00  batch         Job  dso202-staging  tasktracker-smoke-test  Succeeded   Synced    PostSync  Reached expected number of succeeded pods
+
+Namespace:          dso202-staging
+  Target:           v1.2.0
+  Helm Values:      ../../environments/staging/values.yaml
+Sync Policy:        Manual
+Sync Status:        Synced to v1.2.0 (95717b8)
+Health Status:      Healthy
+
+Operation:          Sync
+Sync Revision:      95717b8d7d238816c3cb70922ae8fc5a86feef3e
+Phase:              Succeeded
+Start:              2026-11-27 23:37:14 +0600 +06
+Finished:           2026-11-27 23:37:26 +0600 +06
+Duration:           12s
+Message:            successfully synced (no more tasks)
+
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-staging  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-staging  backend-config          Synced                        configmap/backend-config unchanged
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-staging  backend                 Synced     Healthy            deployment.apps/backend configured
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend unchanged
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+$ kubectl get deployment/backend -n dso202-staging    # at 23:38:04
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+backend   1/1     1            1           2d22h
+
+$ argocd app get tasktracker-staging
+Sync Status:        Synced to v1.2.0 (95717b8)
+Health Status:      Healthy
+apps   Deployment      dso202-staging  backend                 Synced     Healthy            deployment.apps/backend configured
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend unchanged
+```
+
+**Observation.** All three replicas became ready and stayed for 40 s, untouched. Argo CD reported only the backend Deployment as `OutOfSync`, and `argocd app diff` showed exactly one difference, `replicas: 3` live against `replicas: 1` from tag `v1.2.0`. The manual sync restored one replica and ran the smoke test.
+
+**Prediction held.** `tasktracker-staging` has no `automated` block, so Argo CD still detects drift but only reports it. A person decides when Git is re-applied, the same gate that keeps unproven releases out of staging.
+
+### Drill 3: removing a file prunes the object
+
+**Prediction.** After the first push, platform-dev creates ConfigMap prune-drill in dso202-dev within about a minute. After the removal, it is deleted again, because platform-dev has prune: true.
+
+Listing 16 was saved as `platform/dev/prune-drill.yaml`. Its last line is cut off in the PDF; it was completed as `"... expected to disappear from the cluster by pruning."`.
+
+```text
+pushed 44a3d06 at 23:38:15
+$ kubectl get configmap prune-drill -n dso202-dev    # at 23:38:36
+NAME          DATA   AGE
+prune-drill   1      2s
+
+$ git rm platform/dev/prune-drill.yaml && git commit && git push
+pushed 2f00555 at 23:38:45
+
+$ kubectl get configmap prune-drill -n dso202-dev    # at 23:40:36
+Error from server (NotFound): configmaps "prune-drill" not found
+
+$ kubectl get configmap -n dso202-dev -w --output-watch-events    (local time, prune-drill only)
+23:38:13 EVENT      NAME               DATA   AGE
+23:38:34 ADDED      prune-drill        1      0s
+23:40:32 MODIFIED   prune-drill        1      118s
+23:40:32 DELETED    prune-drill        1      118s
+
+$ argocd app get platform-dev
+Sync Status:        Synced to main (2f00555)
+Health Status:      Healthy
+                           ConfigMap       dso202-dev  prune-drill                Succeeded  Pruned         pruned
+                           Namespace       dso202-dev  dso202-dev                 Running    Synced         namespace/dso202-dev unchanged
+                           Namespace                   dso202-dev                 Synced                    
+
+$ argocd app history platform-dev | tail -3
+0       2026-11-25 01:21:53 +0600 +06  main (846ae44)
+1       2026-11-27 23:38:34 +0600 +06  main (44a3d06)
+2       2026-11-27 23:40:32 +0600 +06  main (2f00555)
+```
+
+**Observation.** The ConfigMap was created 19 s after the push of `44a3d06`. After `git rm` was pushed (`2f00555`, 23:38:45), it was deleted at 23:40:32, about 1 min 47 s later. Argo CD found the change on its next poll of the repository (`timeout.reconciliation: 60s` in `argocd-cm`, plus up to 60 s of jitter), and `platform-dev` listed it as `Pruned`.
+
+**Prediction held,** although the deletion took longer than "about a minute" because of the polling interval. `prune: true` in `platform-dev` lets the controller delete live objects that it manages and that no longer exist in Git. Without it, the ConfigMap would stay and only be reported as `OutOfSync` ("requires pruning").
+
+**Why the namespace is protected (explained, not tested).** `platform/dev/namespace.yaml` (Listing 11) carries `argocd.argoproj.io/sync-options: Prune=false`. If that file were deleted from Git, `platform-dev` would show the Namespace as `OutOfSync` but would never delete it. Deleting a Namespace deletes everything inside it: the workloads, the Secret, and the database PVC with its data. That should never happen as a side effect of a file removal, so it requires a deliberate `kubectl delete namespace` by a person.
+
+### Drill 4: the project rejects a resource it does not permit
+
+**Prediction.** Tasktracker-dev refuses to sync. Its status shows that the ResourceQuota kind is not permitted in project dso202, and nothing is created. Staging is unaffected because it reads tag v1.2.0, which does not contain the file. Reverting the commit returns dev to Synced/Healthy.
+
+Listing 17 was saved as `charts/tasktracker/templates/drill-quota.yaml`, committed and pushed to `main`.
+
+```text
+pushed b8c4b79 at 23:40:47
+
+$ argocd app get tasktracker-dev    # at 23:42:56
+Namespace:          dso202-dev
+  Target:           main
+  Helm Values:      ../../environments/dev/values.yaml
+Sync Policy:        Automated (Prune)
+Sync Status:        OutOfSync from main (b8c4b79)
+Health Status:      Healthy
+
+GROUP  KIND            NAMESPACE   NAME                    STATUS   HEALTH   HOOK  MESSAGE
+       ResourceQuota   dso202-dev  drill-quota             Unknown  Missing        resource :ResourceQuota is not permitted in project dso202
+       ConfigMap       dso202-dev  backend-config          Synced                  
+       ConfigMap       dso202-dev  db-config               Synced                  
+       ConfigMap       dso202-dev  frontend-config         Synced                  
+       Service         dso202-dev  backend                 Synced   Healthy        
+       Service         dso202-dev  db                      Synced   Healthy        
+       Service         dso202-dev  frontend                Synced   Healthy        
+       ServiceAccount  dso202-dev  backend-sa              Synced                  
+apps   Deployment      dso202-dev  backend                 Synced   Healthy        
+apps   Deployment      dso202-dev  frontend                Synced   Healthy        
+apps   StatefulSet     dso202-dev  db                      Synced   Healthy        
+batch  Job             dso202-dev  tasktracker-smoke-test           Healthy        
+
+$ kubectl get applications -n argocd
+NAME                  SYNC STATUS   HEALTH STATUS
+platform-dev          Synced        Healthy
+platform-staging      Synced        Healthy
+root                  Synced        Healthy
+sealed-secrets        Synced        Healthy
+tasktracker-dev       OutOfSync     Healthy
+tasktracker-staging   Synced        Healthy
+
+$ kubectl get resourcequota -n dso202-dev
+NAME                 REQUEST                                                                                     LIMIT                                           AGE
+task-tracker-quota   persistentvolumeclaims: 1/2, pods: 3/20, requests.cpu: 250m/1, requests.memory: 384Mi/1Gi   limits.cpu: 1200m/3, limits.memory: 896Mi/2Gi   2d22h
+
+$ argocd app get tasktracker-staging
+  Target:           v1.2.0
+Sync Status:        Synced to v1.2.0 (95717b8)
+Health Status:      Healthy
+
+$ git ls-tree -r --name-only v1.2.0 charts/tasktracker/templates/ | grep drill
+(no output: the file is not in tag v1.2.0)
+
+$ git revert --no-edit b8c4b79
+[main 746b787] Revert "Task 8 drill 4: add ResourceQuota to the chart (Listing 17; expect rejection)"
+ Date: Fri Nov 27 23:43:04 2026 +0600
+ 1 file changed, 15 deletions(-)
+ delete mode 100644 charts/tasktracker/templates/drill-quota.yaml
+pushed 746b787 at 23:43:06
+
+$ argocd app get tasktracker-dev    # at 23:48:12
+Sync Status:        Synced to main (746b787)
+Health Status:      Healthy
+       ResourceQuota   dso202-dev  drill-quota                     SyncFailed        resource :ResourceQuota is not permitted in project dso202
+apps   Deployment      dso202-dev  backend                 Synced  Healthy           
+apps   Deployment      dso202-dev  frontend                Synced  Healthy           
+
+$ kubectl get applications -n argocd
+NAME                  SYNC STATUS   HEALTH STATUS
+platform-dev          Synced        Healthy
+platform-staging      Synced        Healthy
+root                  Synced        Healthy
+sealed-secrets        Synced        Healthy
+tasktracker-dev       Synced        Healthy
+tasktracker-staging   Synced        Healthy
+
+# operation state at 23:48:53, after the retry loop ended
+phase=Failed revision=b8c4b798cad5aa7411304f39a60ea8045a758ef5 message=one or more synchronization tasks are not valid: resource :ResourceQuota is not permitted in project dso202 (retried 5 times).
+
+$ argocd app get tasktracker-dev
+Sync Status:        Synced to main (746b787)
+Health Status:      Healthy
+       ResourceQuota   dso202-dev  drill-quota                     SyncFailed        resource :ResourceQuota is not permitted in project dso202
+apps   Deployment      dso202-dev  backend                 Synced  Healthy           
+apps   Deployment      dso202-dev  frontend                Synced  Healthy           
+batch  Job             dso202-dev  tasktracker-smoke-test          Healthy           
+```
+
+The exact message:
+
+```text
+one or more synchronization tasks are not valid: resource :ResourceQuota is not permitted in project dso202
+```
+
+**Observation.** `tasktracker-dev` went `OutOfSync` and refused the whole sync operation, not only the ResourceQuota. Argo CD validates every resource against the project before applying any of them, so no `drill-quota` was created; the only quota in `dso202-dev` is the platform's `task-tracker-quota`. The running workload stayed `Healthy`. The automated sync retried with back-off and finally ended `Failed ... (retried 5 times)`.
+
+**Staging was unaffected.** `tasktracker-staging` stayed `Synced / Healthy` on `v1.2.0`. It reads the chart from tag `v1.2.0`, which points at commit `95717b8`, and that commit does not contain the template (`git ls-tree` prints nothing). A commit to `main` cannot reach staging until a person moves its `targetRevision`.
+
+**Restore.** `git revert b8c4b79` (`746b787`) removed the template. Desired state and live state were then equal again, so the Application became `Synced / Healthy` on `746b787` without anything being applied. The `SyncFailed` row for `drill-quota` is the leftover result of the last failed operation, and it is not a live object. The final retry of that operation still targeted `b8c4b79`, as in Task 7, step 8.
+
+**Prediction held.** The `dso202` AppProject has a `namespaceResourceWhitelist` that lists only the kinds the chart needs (Deployment, StatefulSet, Service, ConfigMap, ServiceAccount, Job), and `ResourceQuota` is not among them. Requirement C8 places quotas in the platform layer, which the `platform` project manages. A chart author therefore cannot loosen or replace the namespace limits, even with push access to `main`. This is the least-privilege boundary between the workload and platform projects (section 6.4).
+
+---
 
 ## Task 9: Rebuild from Git
 
