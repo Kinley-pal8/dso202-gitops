@@ -49,3 +49,13 @@ spec:
       kind: ServiceAccount
     - group: batch
       kind: Job
+    # Not rendered by the chart, but created by the controllers above. Argo CD
+    # hides any child object whose kind the project does not permit, so without
+    # these two the resource tree stops at the Deployments: no Pods are shown,
+    # and no logs can be opened in the UI or with 'argocd app logs' (Task 6).
+    # They add no capability: a project that may create Deployments, StatefulSets
+    # and Jobs can already run any Pod spec through them.
+    - group: apps
+      kind: ReplicaSet
+    - group: ""
+      kind: Pod
