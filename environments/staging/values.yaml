@@ -22,9 +22,7 @@ database:
 backend:
   replicaCount: 1
   image:
-    # Stand-in 1.1 image built from stand-in-images/backend (tutor-approved).
-    repository: dso202-local/dso202-backend
-    tag: "1.1"
+    tag: "1.0"
 
 frontend:
   replicaCount: 1
