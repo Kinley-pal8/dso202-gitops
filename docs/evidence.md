@@ -876,7 +876,765 @@ Screenshot: `docs/screenshots/task6-reviewer-logs.png` (reviewer session in a pr
 
 ## Task 7: A Release, a Faulty Release, and Recovery
 
-**Pending.** The tutor-issued `sarojsanyasi/dso202-frontend:1.1` and `sarojsanyasi/dso202-backend:1.1` images were not available on Docker Hub when Tasks 1 to 6 were completed (25 November 2026). Only tag `1.0` exists.
+### Images used for the release
+
+The tutor-issued `sarojsanyasi/dso202-frontend:1.1` and `sarojsanyasi/dso202-backend:1.1` tags were never published on Docker Hub; only `1.0` exists. The module tutor instructed me to build my own. The source is in [`stand-in-images/`](../stand-in-images/README.md), built from the `1.0` source of Assignment 1. The images are tagged `dso202-local/dso202-{frontend,backend}:1.1` and loaded into the kind node with `kind load docker-image`, so they cannot be mistaken for the tutor's images. Each one matches its section 8 release note:
+
+- **Frontend 1.1:** the page header shows `release 1.1`; nothing else changes.
+- **Backend 1.1:** configuration loading is refactored into `src/config.js`, and the API is unchanged. The new loader also requires `DB_POOL_MAX`, which the release note does not mention. Without it the process exits at start-up, as a Task 7 backend is meant to.
+
+Because the repository changes as well as the tag, each release changes `image.repository` and `image.tag` in the values files. This is still a values-only change (C1).
+
+### Pull requests
+
+All six changes were made on a branch and merged through a GitHub pull request. GitHub's "Create a merge commit" was used instead of squash merging, so each pull request is a branch commit plus a merge commit on `main`. The revert therefore needed `git revert -m 1`, as the brief describes. A screenshot of the pull request list is `docs/screenshots/task7-pull-requests.png`.
+
+| PR | Branch | Change | Merge commit on `main` |
+|---|---|---|---|
+| #1 | `release/frontend-1.1` | Frontend `1.1` in both values files | `3c1879a` (tag `v1.1.0`) |
+| #2 | `promote/staging-v1.1.0` | Staging `targetRevision` `v1.0.0` to `v1.1.0` | `df1dde2` |
+| #3 | `release/backend-1.1` | Backend `1.1` in both values files: **the bad commit** | `0a3267f` |
+| #4 | `revert/backend-1.1` | `git revert -m 1 0a3267f` | `91ce0d7` |
+| #5 | `fix/backend-1.1-pool-max` | Backend `1.1` again, plus `backend.config.DB_POOL_MAX: "10"` | `95717b8` (tag `v1.2.0`) |
+| #6 | `promote/staging-v1.2.0` | Staging `targetRevision` `v1.1.0` to `v1.2.0` | `08e5e1b` |
+
+```text
+$ git log --oneline --graph --decorate -n 15
+*   08e5e1b (HEAD -> main, origin/main, origin/HEAD) Merge pull request #6 from Kinley-pal8/promote/staging-v1.2.0
+|\  
+| * 996b299 (origin/promote/staging-v1.2.0, promote/staging-v1.2.0) Promote staging to v1.2.0 (backend 1.1 with DB_POOL_MAX)
+|/  
+*   95717b8 (tag: v1.2.0) Merge pull request #5 from Kinley-pal8/fix/backend-1.1-pool-max
+|\  
+| * 6b4b86a (origin/fix/backend-1.1-pool-max, fix/backend-1.1-pool-max) Fix forward: backend 1.1 with DB_POOL_MAX supplied as a value (C2)
+|/  
+*   91ce0d7 Merge pull request #4 from Kinley-pal8/revert/backend-1.1
+|\  
+| * e8342ec (origin/revert/backend-1.1, revert/backend-1.1) Revert "Merge pull request #3 from Kinley-pal8/release/backend-1.1"
+|/  
+*   0a3267f Merge pull request #3 from Kinley-pal8/release/backend-1.1
+|\  
+| * c94a6a5 (origin/release/backend-1.1, release/backend-1.1) Release backend 1.1 to dev (staging values updated, gated by tag)
+|/  
+*   df1dde2 Merge pull request #2 from Kinley-pal8/promote/staging-v1.1.0
+|\  
+| * 027c1fe (origin/promote/staging-v1.1.0, promote/staging-v1.1.0) Promote staging to v1.1.0 (frontend 1.1)
+|/  
+*   3c1879a (tag: v1.1.0) Merge pull request #1 from Kinley-pal8/release/frontend-1.1
+|\  
+| * 2de323a (origin/release/frontend-1.1, release/frontend-1.1) Release frontend 1.1 to dev (staging values updated, gated by tag)
+|/  
+* c8653c9 Add source for stand-in 1.1 frontend and backend images (tutor-approved; 1.1 tags not published)
+* ac9420e Add README (versions, bootstrap, credentials, Q1-Q4) and evidence for Tasks 1-6
+* ce5872c Grant reviewer read access to logs in the dso202 project (Task 6, step 4)
+```
+
+### Part A, steps 1 and 2: frontend 1.1 reaches dev
+
+Pull request #1 was merged at about 22:31. The dev Pods were watched with local timestamps:
+
+```text
+22:31:47 EVENT      NAME                           READY   STATUS      RESTARTS      AGE
+22:31:47 ADDED      backend-d666f4fd-j5ltm         1/1     Running     2 (25m ago)   2d21h
+22:31:47 ADDED      db-0                           1/1     Running     2 (25m ago)   2d21h
+22:31:47 ADDED      frontend-f5bbcbb78-45sc7       1/1     Running     2 (25m ago)   2d21h
+22:31:47 ADDED      tasktracker-smoke-test-j7c64   0/1     Completed   0             2d21h
+22:31:48 ADDED      frontend-698c7d47fb-wc8cf      0/1     Pending     0             0s
+22:31:48 MODIFIED   frontend-698c7d47fb-wc8cf      0/1     Pending     0             0s
+22:31:48 MODIFIED   frontend-698c7d47fb-wc8cf      0/1     ContainerCreating   0             0s
+22:31:49 MODIFIED   frontend-698c7d47fb-wc8cf      0/1     ContainerCreating   0             1s
+22:31:49 MODIFIED   frontend-698c7d47fb-wc8cf      0/1     Running             0             1s
+22:31:49 MODIFIED   frontend-698c7d47fb-wc8cf      1/1     Running             0             1s
+22:31:49 MODIFIED   frontend-f5bbcbb78-45sc7       1/1     Terminating         2 (25m ago)   2d21h
+22:31:49 MODIFIED   frontend-f5bbcbb78-45sc7       1/1     Terminating         2 (25m ago)   2d21h
+22:31:49 MODIFIED   frontend-f5bbcbb78-45sc7       0/1     Completed           2 (25m ago)   2d21h
+22:31:50 MODIFIED   frontend-698c7d47fb-wc8cf      1/1     Running             0             2s
+22:31:50 MODIFIED   frontend-f5bbcbb78-45sc7       0/1     Completed           2 (25m ago)   2d21h
+22:31:50 DELETED    frontend-f5bbcbb78-45sc7       0/1     Completed           2 (25m ago)   2d21h
+22:31:50 MODIFIED   tasktracker-smoke-test-j7c64   0/1     Completed           0             2d21h
+22:31:50 DELETED    tasktracker-smoke-test-j7c64   0/1     Completed           0             2d21h
+22:31:50 ADDED      tasktracker-smoke-test-rhnrq   0/1     Pending             0             0s
+22:31:50 MODIFIED   tasktracker-smoke-test-rhnrq   0/1     Pending             0             0s
+22:31:50 MODIFIED   tasktracker-smoke-test-rhnrq   0/1     ContainerCreating   0             0s
+22:31:51 MODIFIED   tasktracker-smoke-test-rhnrq   0/1     ContainerCreating   0             1s
+22:31:52 MODIFIED   tasktracker-smoke-test-rhnrq   1/1     Running             0             2s
+22:31:53 MODIFIED   tasktracker-smoke-test-rhnrq   0/1     Completed           0             3s
+22:31:54 MODIFIED   tasktracker-smoke-test-rhnrq   0/1     Completed           0             4s
+22:31:54 MODIFIED   tasktracker-smoke-test-rhnrq   0/1     Completed           0             4s
+```
+
+```text
+$ curl -s http://localhost:30080 | grep -o '<p class="subhead">.*</p>'
+<p class="subhead">task tracker &mdash; unit i deployment demo &middot; <span class="release-tag">release 1.1</span></p>
+
+$ argocd app get tasktracker-dev
+Name:               argocd/tasktracker-dev
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-dev
+URL:                https://localhost:8080/applications/tasktracker-dev
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           main
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/dev/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Automated (Prune)
+Sync Status:        Synced to main (3c1879a)
+Health Status:      Healthy
+GROUP  KIND            NAMESPACE   NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-dev  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-dev  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-dev  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7cb8df4897...
+       ServiceAccount  dso202-dev  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-dev  backend-config          Synced                        configmap/backend-config unchanged
+       Service         dso202-dev  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-dev  backend                 Synced     Healthy            deployment.apps/backend unchanged
+       ConfigMap       dso202-dev  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-dev  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-dev  frontend                Synced     Healthy            deployment.apps/frontend configured
+batch  Job             dso202-dev  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+$ argocd app history tasktracker-dev
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-25 01:29:39 +0600 +06  main (86bd5bb)
+1       2026-11-27 22:31:54 +0600 +06  main (3c1879a)
+
+$ kubectl get deploy frontend -n dso202-dev -o jsonpath='{..image}'
+dso202-local/dso202-frontend:1.1
+```
+
+The frontend rolled in about two seconds: the new Pod became ready, then the old one was removed. The PostSync smoke test then ran again and succeeded. The page header shows `release 1.1`. The database and backend were left `unchanged`.
+
+### Part A, step 3: promotion to staging through tag `v1.1.0`
+
+```text
+$ git tag -a v1.1.0 -m "Release: frontend 1.1"      # on 3c1879a
+$ git push origin v1.1.0
+# then pull request #2 (targetRevision: v1.1.0), merged as df1dde2
+```
+
+After root applied the changed Application, staging was `OutOfSync` but did not deploy, because it has no automated sync:
+
+```text
+$ argocd app get tasktracker-staging --refresh
+Name:               argocd/tasktracker-staging
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-staging
+URL:                https://localhost:8080/applications/tasktracker-staging
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           v1.1.0
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/staging/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Manual
+Sync Status:        OutOfSync from v1.1.0 (3c1879a)
+Health Status:      Healthy
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config created
+       Service         dso202-staging  db                      Synced     Healthy            service/db created
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa created
+       ConfigMap       dso202-staging  backend-config          Synced                        configmap/backend-config created
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend created
+apps   Deployment      dso202-staging  backend                 Synced     Healthy            deployment.apps/backend created
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config created
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend created
+apps   Deployment      dso202-staging  frontend                OutOfSync  Healthy            deployment.apps/frontend created
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+```
+
+```text
+# Before the sync, through kubectl port-forward svc/frontend -n dso202-staging 8081:8080
+$ curl -s http://localhost:8081 | grep -o '<p class="subhead">.*</p>'
+<p class="subhead">task tracker &mdash; unit i deployment demo</p>
+
+$ argocd app sync tasktracker-staging
+TIMESTAMP                  GROUP        KIND       NAMESPACE                      NAME      STATUS    HEALTH        HOOK  MESSAGE
+2026-11-27T22:40:31+06:00   apps  Deployment      dso202-staging               backend      Synced   Healthy              
+2026-11-27T22:40:31+06:00          ConfigMap      dso202-staging        backend-config      Synced                        
+2026-11-27T22:40:31+06:00            Service      dso202-staging                    db      Synced   Healthy              
+2026-11-27T22:40:31+06:00            Service      dso202-staging              frontend      Synced   Healthy              
+2026-11-27T22:40:31+06:00         ServiceAccount  dso202-staging            backend-sa      Synced                        
+2026-11-27T22:40:31+06:00   apps  Deployment      dso202-staging              frontend    OutOfSync  Healthy              
+2026-11-27T22:40:31+06:00   apps  StatefulSet     dso202-staging                    db      Synced   Healthy              
+2026-11-27T22:40:31+06:00  batch         Job      dso202-staging  tasktracker-smoke-test             Healthy              
+2026-11-27T22:40:31+06:00          ConfigMap      dso202-staging             db-config      Synced                        
+2026-11-27T22:40:31+06:00          ConfigMap      dso202-staging       frontend-config      Synced                        
+2026-11-27T22:40:31+06:00            Service      dso202-staging               backend      Synced   Healthy              
+2026-11-27T22:40:34+06:00   apps  StatefulSet  dso202-staging                    db    Synced  Healthy              statefulset.apps/db configured
+2026-11-27T22:40:34+06:00          ConfigMap   dso202-staging             db-config    Synced                       configmap/db-config unchanged
+2026-11-27T22:40:34+06:00            Service   dso202-staging                    db    Synced  Healthy              service/db unchanged
+2026-11-27T22:40:36+06:00         ServiceAccount  dso202-staging            backend-sa    Synced                       serviceaccount/backend-sa unchanged
+2026-11-27T22:40:36+06:00          ConfigMap      dso202-staging        backend-config    Synced                       configmap/backend-config unchanged
+2026-11-27T22:40:36+06:00            Service      dso202-staging               backend    Synced  Healthy              service/backend unchanged
+2026-11-27T22:40:36+06:00   apps  Deployment      dso202-staging               backend    Synced  Healthy              deployment.apps/backend unchanged
+2026-11-27T22:40:36+06:00   apps  StatefulSet     dso202-staging                    db    Synced  Healthy              statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+2026-11-27T22:40:36+06:00   apps  Deployment  dso202-staging              frontend    Synced  Progressing              
+2026-11-27T22:40:37+06:00   apps  Deployment  dso202-staging              frontend    Synced  Healthy              
+2026-11-27T22:40:38+06:00            Service  dso202-staging              frontend    Synced  Healthy              service/frontend unchanged
+2026-11-27T22:40:38+06:00   apps  Deployment  dso202-staging              frontend    Synced  Healthy              deployment.apps/frontend configured
+2026-11-27T22:40:38+06:00          ConfigMap  dso202-staging       frontend-config    Synced                       configmap/frontend-config unchanged
+2026-11-27T22:40:38+06:00  batch         Job  dso202-staging  tasktracker-smoke-test            Progressing              
+2026-11-27T22:40:38+06:00  batch         Job  dso202-staging  tasktracker-smoke-test   Running   Synced    PostSync  job.batch/tasktracker-smoke-test created
+2026-11-27T22:40:38+06:00  batch         Job  dso202-staging  tasktracker-smoke-test   Running   Synced    PostSync  Pending deletion
+2026-11-27T22:40:42+06:00  batch         Job  dso202-staging  tasktracker-smoke-test  Succeeded   Synced    PostSync  Reached expected number of succeeded pods
+Name:               argocd/tasktracker-staging
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-staging
+URL:                https://localhost:8080/applications/tasktracker-staging
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           v1.1.0
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/staging/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Manual
+Sync Status:        Synced to v1.1.0 (3c1879a)
+Health Status:      Healthy
+Operation:          Sync
+Sync Revision:      3c1879aa4e4f100c4f3a88c8c62951160d2901b0
+Phase:              Succeeded
+Start:              2026-11-27 22:40:31 +0600 +06
+Finished:           2026-11-27 22:40:42 +0600 +06
+Duration:           11s
+Message:            successfully synced (no more tasks)
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-staging  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-staging  backend-config          Synced                        configmap/backend-config unchanged
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-staging  backend                 Synced     Healthy            deployment.apps/backend unchanged
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend configured
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+# After the sync
+$ curl -s http://localhost:8081 | grep -o '<p class="subhead">.*</p>'
+<p class="subhead">task tracker &mdash; unit i deployment demo &middot; <span class="release-tag">release 1.1</span></p>
+
+$ argocd app history tasktracker-staging
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-25 01:30:41 +0600 +06  v1.0.0 (10e828a)
+1       2026-11-27 22:40:42 +0600 +06  v1.1.0 (3c1879a)
+```
+
+Staging showed the old header until a person ran the sync. After the sync it shows `release 1.1`, and its smoke test passed.
+
+### Part B, step 4: backend 1.1 (the bad commit)
+
+Pull request #3 changed the backend in both values files and was merged as **`0a3267f`**, the bad commit. Staging was unaffected: it reads tag `v1.1.0`.
+
+### Part B, step 5: observation without intervention
+
+Dev Pods (watch, local time). The new backend Pod `backend-664d47bfd-827vg` is created and crashes; the old `backend-d666f4fd-j5ltm` keeps running:
+
+```text
+22:40:59 EVENT      NAME                           READY   STATUS      RESTARTS      AGE
+22:40:59 ADDED      backend-d666f4fd-j5ltm         1/1     Running     2 (34m ago)   2d21h
+22:40:59 ADDED      db-0                           1/1     Running     2 (34m ago)   2d21h
+22:40:59 ADDED      frontend-698c7d47fb-wc8cf      1/1     Running     0             9m11s
+22:40:59 ADDED      tasktracker-smoke-test-rhnrq   0/1     Completed   0             9m9s
+22:44:32 ADDED      backend-664d47bfd-827vg        0/1     Pending     0             0s
+22:44:32 MODIFIED   backend-664d47bfd-827vg        0/1     Pending     0             0s
+22:44:32 MODIFIED   backend-664d47bfd-827vg        0/1     ContainerCreating   0             0s
+22:44:33 MODIFIED   backend-664d47bfd-827vg        0/1     ContainerCreating   0             1s
+22:44:33 MODIFIED   backend-664d47bfd-827vg        0/1     Running             0             1s
+22:44:34 MODIFIED   backend-664d47bfd-827vg        0/1     Error               0             2s
+22:44:34 MODIFIED   backend-664d47bfd-827vg        0/1     Running             1 (1s ago)    2s
+22:44:35 MODIFIED   backend-664d47bfd-827vg        0/1     Error               1 (2s ago)    3s
+22:44:36 MODIFIED   backend-664d47bfd-827vg        0/1     CrashLoopBackOff    1 (2s ago)    4s
+22:44:45 MODIFIED   backend-664d47bfd-827vg        0/1     Running             2 (11s ago)   13s
+22:44:46 MODIFIED   backend-664d47bfd-827vg        0/1     Error               2 (12s ago)   14s
+22:44:47 MODIFIED   backend-664d47bfd-827vg        0/1     CrashLoopBackOff    2 (2s ago)    15s
+22:45:13 MODIFIED   backend-664d47bfd-827vg        0/1     Running             3 (28s ago)   41s
+22:45:14 MODIFIED   backend-664d47bfd-827vg        0/1     Error               3 (29s ago)   42s
+22:45:15 MODIFIED   backend-664d47bfd-827vg        0/1     CrashLoopBackOff    3 (2s ago)    43s
+22:46:09 MODIFIED   backend-664d47bfd-827vg        0/1     Running             4 (56s ago)   97s
+22:46:10 MODIFIED   backend-664d47bfd-827vg        0/1     Error               4 (57s ago)   98s
+22:46:11 MODIFIED   backend-664d47bfd-827vg        0/1     CrashLoopBackOff    4 (2s ago)    99s
+22:47:31 MODIFIED   backend-664d47bfd-827vg        0/1     Running             5 (82s ago)   2m59s
+22:47:32 MODIFIED   backend-664d47bfd-827vg        0/1     Error               5 (83s ago)   3m
+22:48:34 MODIFIED   backend-664d47bfd-827vg        0/1     CrashLoopBackOff    5 (63s ago)   4m2s
+22:50:18 MODIFIED   backend-664d47bfd-827vg        0/1     Running             6 (2m47s ago)   5m46s
+22:50:19 MODIFIED   backend-664d47bfd-827vg        0/1     Error               6 (2m48s ago)   5m47s
+22:50:20 MODIFIED   backend-664d47bfd-827vg        0/1     CrashLoopBackOff    6 (2s ago)      5m48s
+```
+
+Application states (watch, local time, transitions only):
+
+```text
+22:44:30 tasktracker-dev       OutOfSync     Healthy
+22:44:33 tasktracker-dev       Synced        Progressing
+22:44:33 root                  Synced        Progressing
+22:46:33 tasktracker-dev       Synced        Degraded
+22:46:33 root                  Synced        Degraded
+22:51:03 tasktracker-dev       OutOfSync     Degraded
+22:54:57 tasktracker-dev       Synced        Healthy
+22:54:57 root                  Synced        Healthy
+22:59:38 tasktracker-dev       OutOfSync     Healthy
+22:59:41 tasktracker-dev       Synced        Progressing
+22:59:41 root                  Synced        Progressing
+22:59:42 tasktracker-dev       Synced        Healthy
+22:59:42 root                  Synced        Healthy
+```
+
+```text
+$ kubectl get pods -n dso202-dev        # at 22:46:46, 2 min 14 s after the new Pod was created
+NAME                           READY   STATUS             RESTARTS      AGE     IP            NODE                          NOMINATED NODE   READINESS GATES
+backend-664d47bfd-827vg        0/1     CrashLoopBackOff   4 (37s ago)   2m14s   10.244.0.23   dso202-gitops-control-plane   <none>           <none>
+backend-d666f4fd-j5ltm         1/1     Running            2 (40m ago)   2d21h   10.244.0.14   dso202-gitops-control-plane   <none>           <none>
+db-0                           1/1     Running            2 (40m ago)   2d21h   10.244.0.11   dso202-gitops-control-plane   <none>           <none>
+frontend-698c7d47fb-wc8cf      1/1     Running            0             14m     10.244.0.19   dso202-gitops-control-plane   <none>           <none>
+tasktracker-smoke-test-rhnrq   0/1     Completed          0             14m     10.244.0.20   dso202-gitops-control-plane   <none>           <none>
+
+$ argocd app get tasktracker-dev
+Name:               argocd/tasktracker-dev
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-dev
+URL:                https://localhost:8080/applications/tasktracker-dev
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           main
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/dev/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Automated (Prune)
+Sync Status:        Synced to main (0a3267f)
+Health Status:      Degraded
+GROUP  KIND            NAMESPACE   NAME                    STATUS  HEALTH    HOOK  MESSAGE
+       ConfigMap       dso202-dev  db-config               Synced                  configmap/db-config unchanged
+       Service         dso202-dev  db                      Synced  Healthy         service/db unchanged
+apps   StatefulSet     dso202-dev  db                      Synced  Healthy         statefulset rolling update complete 1 pods at revision db-7cb8df4897...
+       ServiceAccount  dso202-dev  backend-sa              Synced                  serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-dev  backend-config          Synced                  configmap/backend-config unchanged
+       Service         dso202-dev  backend                 Synced  Healthy         service/backend unchanged
+apps   Deployment      dso202-dev  backend                 Synced  Degraded        Deployment "backend" exceeded its progress deadline
+       ConfigMap       dso202-dev  frontend-config         Synced                  
+       Service         dso202-dev  frontend                Synced  Healthy         
+apps   Deployment      dso202-dev  frontend                Synced  Healthy         
+batch  Job             dso202-dev  tasktracker-smoke-test          Healthy         
+
+$ kubectl get applications -n argocd
+NAME                  SYNC STATUS   HEALTH STATUS
+platform-dev          Synced        Healthy
+platform-staging      Synced        Healthy
+root                  Synced        Degraded
+sealed-secrets        Synced        Healthy
+tasktracker-dev       Synced        Degraded
+tasktracker-staging   Synced        Healthy
+
+$ kubectl get deploy backend -n dso202-dev -o jsonpath='{range .status.conditions[*]}...{end}'
+Available=True MinimumReplicasAvailable: Deployment has minimum availability.
+Progressing=False ProgressDeadlineExceeded: ReplicaSet "backend-664d47bfd" has timed out progressing.
+
+$ kubectl get jobs -n dso202-dev
+NAME                     STATUS     COMPLETIONS   DURATION   AGE
+tasktracker-smoke-test   Complete   1/1           4s         14m
+
+$ curl -s -o /dev/null -w "frontend HTTP %{http_code}\n" http://localhost:30080/
+frontend HTTP 200
+```
+
+Observations for dev:
+
+- **New backend Pod:** started at 22:44:32 and exited with code 1 within two seconds. It went into `CrashLoopBackOff` and restarted with growing back-off delays. It never became ready.
+- **Old backend Pod:** stayed `1/1 Running` and kept serving. A rolling update removes an old Pod only after a new one is ready, so the API stayed up on `1.0`.
+- **Application:** went `Synced / Progressing` at 22:44:33, then `Synced / Degraded` at 22:46:33, 120 s after the rollout began (C6). The Deployment message was `Deployment "backend" exceeded its progress deadline`. Sync status stayed `Synced`: the live Deployment matched Git exactly, but it did not work (see Q3). `root` followed, to `Degraded`.
+- **Smoke test:** did not run again. The only Job was the one completed 14 minutes earlier for PR #1. A PostSync hook runs only after every synced resource is healthy, and the sync operation stayed in `Running` with "Retrying operation" instead.
+- **Frontend:** still answered HTTP 200 at `http://localhost:30080`.
+- **Staging:** stayed `Synced / Healthy` throughout, on `v1.1.0`.
+
+### Part B, step 6: diagnosis
+
+```text
+$ kubectl describe pod backend-664d47bfd-827vg -n dso202-dev      (Containers section and Events)
+Name:             backend-664d47bfd-827vg
+Namespace:        dso202-dev
+Node:             dso202-gitops-control-plane/172.18.0.2
+Status:           Running
+Controlled By:  ReplicaSet/backend-664d47bfd
+Containers:
+  backend:
+    Container ID:   containerd://affb85c8998046991c51e8fadcbd25acaeb44e25858adcd7e9726e07953d1032
+    Image:          dso202-local/dso202-backend:1.1
+    Image ID:       sha256:019a68277904cc0a068d152808fa899467a9bce960fb0fd9196f247f795206a5
+    Port:           8080/TCP (http)
+    Host Port:      0/TCP (http)
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Fri, 27 Nov 2026 22:46:09 +0600
+      Finished:     Fri, 27 Nov 2026 22:46:09 +0600
+    Ready:          False
+    Restart Count:  4
+    Limits:
+      cpu:     500m
+      memory:  256Mi
+    Requests:
+      cpu:      100m
+      memory:   128Mi
+    Readiness:  http-get http://:http/api/status delay=0s timeout=1s period=5s #success=1 #failure=3
+    Environment Variables from:
+      backend-config  ConfigMap  Optional: false
+    Environment:
+      DB_USER:      <set to the key 'DB_USER' in secret 'tasktracker-credentials'>      Optional: false
+      DB_PASSWORD:  <set to the key 'DB_PASSWORD' in secret 'tasktracker-credentials'>  Optional: false
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-8gn4t (ro)
+...
+Events:
+  Type     Reason     Age                  From               Message
+  ----     ------     ----                 ----               -------
+  Normal   Scheduled  2m21s                default-scheduler  Successfully assigned dso202-dev/backend-664d47bfd-827vg to dso202-gitops-control-plane
+  Normal   Pulled     45s (x5 over 2m21s)  kubelet            spec.containers{backend}: Container image "dso202-local/dso202-backend:1.1" already present on machine and can be accessed by the pod
+  Normal   Created    45s (x5 over 2m21s)  kubelet            spec.containers{backend}: Container created
+  Normal   Started    45s (x5 over 2m21s)  kubelet            spec.containers{backend}: Container started
+  Warning  Unhealthy  45s (x5 over 2m21s)  kubelet            spec.containers{backend}: Readiness probe failed: Get "http://10.244.0.23:8080/api/status": dial tcp 10.244.0.23:8080: connect: connection refused
+  Warning  BackOff    43s (x8 over 2m19s)  kubelet            spec.containers{backend}: Back-off restarting failed container backend in pod backend-664d47bfd-827vg_dso202-dev(fb5a4839-8b6d-4cf5-b393-39ea1f230a40)
+
+$ kubectl logs backend-664d47bfd-827vg -n dso202-dev
+[config] FATAL: required environment variable DB_POOL_MAX is not set (maximum number of database connections, a positive integer such as "10")
+```
+
+The log line that states what the new image requires:
+
+```text
+[config] FATAL: required environment variable DB_POOL_MAX is not set (maximum number of database connections, a positive integer such as "10")
+```
+
+`describe` shows only the symptoms: `Exit Code: 1`, `Restart Count`, `BackOff`, and readiness probe failures with "connection refused", because the process never opened its port. The image was present and the Pod was scheduled, so this is not a pull or scheduling problem. The cause is in the logs: the release note promised only "internal refactoring", but the new image needs a setting that the `1.0` image did not.
+
+### Part B, step 7: `argocd app rollback`
+
+```text
+$ argocd app rollback tasktracker-dev
+{"level":"fatal","msg":"rpc error: code = FailedPrecondition desc = rollback cannot be initiated when auto-sync is enabled","time":"2026-11-27T22:46:54+06:00"}
+exit code: 20
+```
+
+Argo CD refuses with `FailedPrecondition: rollback cannot be initiated when auto-sync is enabled`, and the CLI exits with code 20. See Q5.
+
+### Part B, step 8: recovery through `git revert`
+
+```text
+$ git checkout -b revert/backend-1.1
+$ git revert --no-edit -m 1 0a3267f
+[revert/backend-1.1 e8342ec] Revert "Merge pull request #3 from Kinley-pal8/release/backend-1.1"
+ 2 files changed, 2 insertions(+), 6 deletions(-)
+$ git push -u origin revert/backend-1.1
+# pull request #4, merged as 91ce0d7
+```
+
+Recovery took about four minutes after the merge, not one, and the reason is worth recording. The Application has a retry policy: `limit: 5`, back-off from 10 s doubling to a 3 min cap. The failed sync of `0a3267f` was still `Running`, retrying. Auto-sync does not start a new operation while one is in progress, so dev stayed `OutOfSync / Degraded` on the reverted commit until the retry loop came round again. Its fifth attempt picked up the new revision. Operation state, polled every 5 s (repeated lines removed):
+
+```text
+22:51:14 OutOfSync/Degraded op=Running rev=0a3267f3e97b0bb3dd6d2c94ed300309260b1dc0 msg=one or more synchronization tasks completed unsuccessfully. Retrying attempt #4 at 4:50PM.
+22:51:49 OutOfSync/Degraded op=Running rev=0a3267f3e97b0bb3dd6d2c94ed300309260b1dc0 msg=waiting for healthy state of /ConfigMap/db-config and 2 more resources
+22:51:54 OutOfSync/Degraded op=Running rev=0a3267f3e97b0bb3dd6d2c94ed300309260b1dc0 msg=one or more synchronization tasks completed unsuccessfully. Retrying attempt #5 at 4:54PM.
+22:54:51 OutOfSync/Degraded op=Running rev=0a3267f3e97b0bb3dd6d2c94ed300309260b1dc0 msg=Retrying operation. Attempt #5
+22:54:56 OutOfSync/Degraded op=Running rev=91ce0d7bb626eb07732dc47c8b640c9bce3da07b msg=
+22:55:01 Synced/Healthy op=Running rev=91ce0d7bb626eb07732dc47c8b640c9bce3da07b msg=waiting for healthy state of /ServiceAccount/backend-sa and 3 more resources
+```
+
+```text
+$ kubectl get pods -n dso202-dev
+NAME                           READY   STATUS      RESTARTS      AGE
+backend-d666f4fd-j5ltm         1/1     Running     2 (49m ago)   2d21h
+db-0                           1/1     Running     2 (49m ago)   2d21h
+frontend-698c7d47fb-wc8cf      1/1     Running     0             23m
+tasktracker-smoke-test-r8jrk   0/1     Completed   0             25s
+
+$ kubectl get deploy backend -n dso202-dev -o jsonpath='{..image}'
+sarojsanyasi/dso202-backend:1.0
+
+$ argocd app get tasktracker-dev
+Name:               argocd/tasktracker-dev
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-dev
+URL:                https://localhost:8080/applications/tasktracker-dev
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           main
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/dev/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Automated (Prune)
+Sync Status:        Synced to main (91ce0d7)
+Health Status:      Healthy
+GROUP  KIND            NAMESPACE   NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-dev  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-dev  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-dev  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7cb8df4897...
+       ServiceAccount  dso202-dev  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-dev  backend-config          Synced                        configmap/backend-config unchanged
+       Service         dso202-dev  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-dev  backend                 Synced     Healthy            deployment.apps/backend configured
+       ConfigMap       dso202-dev  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-dev  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-dev  frontend                Synced     Healthy            deployment.apps/frontend unchanged
+batch  Job             dso202-dev  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+$ argocd app history tasktracker-dev
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-25 01:29:39 +0600 +06  main (86bd5bb)
+1       2026-11-27 22:31:54 +0600 +06  main (3c1879a)
+2       2026-11-27 22:55:06 +0600 +06  main (91ce0d7)
+```
+
+Dev is `Healthy` again on the baseline backend `1.0`. The crash-looping Pod was removed, and the smoke test passed. The Git history now holds both the bad commit `0a3267f` and its revert `91ce0d7`. `argocd app history` has no entry for `0a3267f`, because that sync never succeeded.
+
+An alternative to waiting was `argocd app terminate-op tasktracker-dev`, which ends the stuck operation so that auto-sync picks up the revert at once. I did not use it, so that the default behaviour could be observed.
+
+### Part B, step 9: fix forward
+
+Pull request #5 sets the backend to `1.1` again and supplies what the log required, as a value (C2). The chart merges `backend.config` into the `backend-config` ConfigMap, which the Deployment reads through `envFrom`. The ConfigMap checksum annotation changes with it, so the Pods roll. No template changed.
+
+```text
+$ git diff 91ce0d7 95717b8 -- environments/dev/values.yaml
+diff --git a/environments/dev/values.yaml b/environments/dev/values.yaml
+index d82b8f9..15083be 100644
+--- a/environments/dev/values.yaml
++++ b/environments/dev/values.yaml
+@@ -20,7 +20,14 @@ database:
+ backend:
+   replicaCount: 1
+   image:
+-    tag: "1.0"
++    # Stand-in 1.1 image built from stand-in-images/backend (tutor-approved).
++    repository: dso202-local/dso202-backend
++    tag: "1.1"
++  # C2: backend 1.1 exits at start-up without DB_POOL_MAX (Task 7, step 6:
++  # "[config] FATAL: required environment variable DB_POOL_MAX is not set").
++  # Merged into the chart's backend.config and rendered into backend-config.
++  config:
++    DB_POOL_MAX: "10"
+ 
+ frontend:
+   replicaCount: 1
+```
+
+```text
+$ kubectl get pods -n dso202-dev        # 15 s after the sync
+NAME                           READY   STATUS        RESTARTS      AGE
+backend-7db9c4769-zn5pz        1/1     Running       0             16s
+backend-d666f4fd-j5ltm         1/1     Terminating   2 (53m ago)   2d21h
+db-0                           1/1     Running       2 (53m ago)   2d21h
+frontend-698c7d47fb-wc8cf      1/1     Running       0             28m
+tasktracker-smoke-test-55w5v   0/1     Completed     0             12s
+
+$ kubectl logs backend-7db9c4769-zn5pz -n dso202-dev
+[config] loaded: db db:5432/taskdb, pool max 10
+[db] connected
+[server] listening on :8080
+
+$ argocd app get tasktracker-dev
+Name:               argocd/tasktracker-dev
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-dev
+URL:                https://localhost:8080/applications/tasktracker-dev
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           main
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/dev/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Automated (Prune)
+Sync Status:        Synced to main (95717b8)
+Health Status:      Healthy
+GROUP  KIND            NAMESPACE   NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-dev  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-dev  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-dev  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7cb8df4897...
+       ServiceAccount  dso202-dev  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-dev  backend-config          Synced                        configmap/backend-config configured
+       Service         dso202-dev  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-dev  backend                 Synced     Healthy            deployment.apps/backend configured
+       ConfigMap       dso202-dev  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-dev  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-dev  frontend                Synced     Healthy            deployment.apps/frontend unchanged
+batch  Job             dso202-dev  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+$ argocd app history tasktracker-dev
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-25 01:29:39 +0600 +06  main (86bd5bb)
+1       2026-11-27 22:31:54 +0600 +06  main (3c1879a)
+2       2026-11-27 22:55:06 +0600 +06  main (91ce0d7)
+3       2026-11-27 22:59:49 +0600 +06  main (95717b8)
+
+$ kubectl run curl-check --rm -i --restart=Never -n dso202-dev --image=busybox:1.37 -- wget -qO- http://backend:8080/api/status
+{"status":"ok","db":"connected"}
+```
+
+Dev is `Synced / Healthy` on `95717b8`, running `dso202-local/dso202-backend:1.1`. The backend logs `pool max 10`, connects to the database and serves the API, and the PostSync smoke test passed.
+
+### Part B, step 10: promotion of the fixed release to staging
+
+```text
+$ git tag -a v1.2.0 -m "Release: backend 1.1 with DB_POOL_MAX"     # on 95717b8
+$ git push origin v1.2.0
+# then pull request #6 (targetRevision: v1.2.0), merged as 08e5e1b
+```
+
+```text
+$ argocd app get tasktracker-staging     # before the sync
+Name:               argocd/tasktracker-staging
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-staging
+URL:                https://localhost:8080/applications/tasktracker-staging
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           v1.2.0
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/staging/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Manual
+Sync Status:        OutOfSync from v1.2.0 (95717b8)
+Health Status:      Healthy
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-staging  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-staging  backend-config          OutOfSync                     configmap/backend-config unchanged
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-staging  backend                 OutOfSync  Healthy            deployment.apps/backend unchanged
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend configured
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+$ kubectl get deploy backend -n dso202-staging -o jsonpath='{..image}'
+sarojsanyasi/dso202-backend:1.0
+
+$ argocd app sync tasktracker-staging
+TIMESTAMP                  GROUP        KIND       NAMESPACE                      NAME      STATUS    HEALTH        HOOK  MESSAGE
+2026-11-27T23:27:57+06:00   apps  StatefulSet     dso202-staging                    db      Synced   Healthy              
+2026-11-27T23:27:57+06:00  batch         Job      dso202-staging  tasktracker-smoke-test             Healthy              
+2026-11-27T23:27:57+06:00          ConfigMap      dso202-staging        backend-config    OutOfSync                       
+2026-11-27T23:27:57+06:00          ConfigMap      dso202-staging             db-config      Synced                        
+2026-11-27T23:27:57+06:00          ConfigMap      dso202-staging       frontend-config      Synced                        
+2026-11-27T23:27:57+06:00            Service      dso202-staging               backend      Synced   Healthy              
+2026-11-27T23:27:57+06:00            Service      dso202-staging                    db      Synced   Healthy              
+2026-11-27T23:27:57+06:00            Service      dso202-staging              frontend      Synced   Healthy              
+2026-11-27T23:27:57+06:00         ServiceAccount  dso202-staging            backend-sa      Synced                        
+2026-11-27T23:27:57+06:00   apps  Deployment      dso202-staging               backend    OutOfSync  Healthy              
+2026-11-27T23:27:57+06:00   apps  Deployment      dso202-staging              frontend      Synced   Healthy              
+2026-11-27T23:28:00+06:00   apps  StatefulSet  dso202-staging                    db    Synced  Healthy              statefulset.apps/db configured
+2026-11-27T23:28:00+06:00          ConfigMap   dso202-staging             db-config    Synced                       configmap/db-config unchanged
+2026-11-27T23:28:00+06:00            Service   dso202-staging                    db    Synced  Healthy              service/db unchanged
+2026-11-27T23:28:00+06:00          ConfigMap  dso202-staging        backend-config    Synced                       
+2026-11-27T23:28:00+06:00   apps  Deployment  dso202-staging               backend    Synced  Progressing              
+2026-11-27T23:28:02+06:00   apps  Deployment  dso202-staging               backend    Synced  Healthy              
+2026-11-27T23:28:02+06:00   apps  Deployment      dso202-staging               backend    Synced  Healthy              deployment.apps/backend configured
+2026-11-27T23:28:02+06:00   apps  StatefulSet     dso202-staging                    db    Synced  Healthy              statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+2026-11-27T23:28:02+06:00         ServiceAccount  dso202-staging            backend-sa    Synced                       serviceaccount/backend-sa unchanged
+2026-11-27T23:28:02+06:00          ConfigMap      dso202-staging        backend-config    Synced                       configmap/backend-config configured
+2026-11-27T23:28:02+06:00            Service      dso202-staging               backend    Synced  Healthy              service/backend unchanged
+2026-11-27T23:28:04+06:00   apps  Deployment  dso202-staging              frontend    Synced  Healthy              deployment.apps/frontend unchanged
+2026-11-27T23:28:04+06:00          ConfigMap  dso202-staging       frontend-config    Synced                       configmap/frontend-config unchanged
+2026-11-27T23:28:04+06:00            Service  dso202-staging              frontend    Synced  Healthy              service/frontend unchanged
+2026-11-27T23:28:04+06:00  batch         Job  dso202-staging  tasktracker-smoke-test   Running   Synced    PostSync  job.batch/tasktracker-smoke-test created
+2026-11-27T23:28:09+06:00  batch         Job  dso202-staging  tasktracker-smoke-test  Succeeded   Synced    PostSync  Reached expected number of succeeded pods
+Name:               argocd/tasktracker-staging
+Project:            dso202
+Server:             https://kubernetes.default.svc
+Namespace:          dso202-staging
+URL:                https://localhost:8080/applications/tasktracker-staging
+Source:
+- Repo:             https://github.com/Kinley-pal8/dso202-gitops.git
+  Target:           v1.2.0
+  Path:             charts/tasktracker
+  Helm Values:      ../../environments/staging/values.yaml
+SyncWindow:         Sync Allowed
+Sync Policy:        Manual
+Sync Status:        Synced to v1.2.0 (95717b8)
+Health Status:      Healthy
+Operation:          Sync
+Sync Revision:      95717b8d7d238816c3cb70922ae8fc5a86feef3e
+Phase:              Succeeded
+Start:              2026-11-27 23:27:57 +0600 +06
+Finished:           2026-11-27 23:28:09 +0600 +06
+Duration:           12s
+Message:            successfully synced (no more tasks)
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config unchanged
+       Service         dso202-staging  db                      Synced     Healthy            service/db unchanged
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa unchanged
+       ConfigMap       dso202-staging  backend-config          Synced                        configmap/backend-config configured
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend unchanged
+apps   Deployment      dso202-staging  backend                 Synced     Healthy            deployment.apps/backend configured
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config unchanged
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend unchanged
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+```
+
+```text
+$ kubectl get pods -n dso202-staging    # just after the sync
+NAME                           READY   STATUS        RESTARTS      AGE
+backend-586d6f8bb7-bxmkh       1/1     Running       0             10s
+backend-756c85f6cb-jqkjw       1/1     Terminating   2 (81m ago)   2d21h
+db-0                           1/1     Running       2 (81m ago)   2d21h
+frontend-68b7c88f4b-q6krm      1/1     Running       0             47m
+tasktracker-smoke-test-qd55d   0/1     Completed     0             6s
+
+$ kubectl logs backend-586d6f8bb7-bxmkh -n dso202-staging
+[config] loaded: db db:5432/taskdb, pool max 10
+[db] connected
+[server] listening on :8080
+
+$ argocd app history tasktracker-staging
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-25 01:30:41 +0600 +06  v1.0.0 (10e828a)
+1       2026-11-27 22:40:42 +0600 +06  v1.1.0 (3c1879a)
+2       2026-11-27 23:28:09 +0600 +06  v1.2.0 (95717b8)
+
+$ argocd app history tasktracker-dev
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-25 01:29:39 +0600 +06  main (86bd5bb)
+1       2026-11-27 22:31:54 +0600 +06  main (3c1879a)
+2       2026-11-27 22:55:06 +0600 +06  main (91ce0d7)
+3       2026-11-27 22:59:49 +0600 +06  main (95717b8)
+
+$ kubectl get applications -n argocd
+NAME                  SYNC STATUS   HEALTH STATUS
+platform-dev          Synced        Healthy
+platform-staging      Synced        Healthy
+root                  Synced        Healthy
+sealed-secrets        Synced        Healthy
+tasktracker-dev       Synced        Healthy
+tasktracker-staging   Synced        Healthy
+### kubectl logs backend-586d6f8bb7-bxmkh -n dso202-staging
+[config] loaded: db db:5432/taskdb, pool max 10
+[db] connected
+[server] listening on :8080
+```
+
+Staging went from `v1.1.0` straight to `v1.2.0`: backend `1.0` to `1.1` with `DB_POOL_MAX`, healthy, with a passing smoke test. Its history is `v1.0.0` (`10e828a`), `v1.1.0` (`3c1879a`) and `v1.2.0` (`95717b8`). The faulty revision `0a3267f` never appears, so **staging never ran the faulty backend**. The gate worked: staging only ever receives a tag that dev has already proven.
+
+All six Applications ended `Synced / Healthy`.
+
+---
 
 ## Task 8: Drift, Pruning and Project Guardrails
 

@@ -15,7 +15,7 @@ This repository holds the whole desired state of the DSO202 Task Tracker: the Ar
 | Environment | Namespace | Follows | Sync | Frontend |
 |---|---|---|---|---|
 | dev | `dso202-dev` | branch `main` | automated, prune, self-heal | `http://localhost:30080` |
-| staging | `dso202-staging` | a Git tag (`v1.0.0`, ...) | manual | `kubectl port-forward -n dso202-staging svc/frontend 8081:8080`, then `http://localhost:8081` |
+| staging | `dso202-staging` | a Git tag (now `v1.2.0`) | manual | `kubectl port-forward -n dso202-staging svc/frontend 8081:8080`, then `http://localhost:8081` |
 
 Command output for every task is in [`docs/evidence.md`](docs/evidence.md).
 
@@ -32,6 +32,7 @@ Command output for every task is in [`docs/evidence.md`](docs/evidence.md).
 | kubectl | v1.36.3 | local tool |
 | Helm | v4.3.1 | local tool |
 | Task Tracker images | `sarojsanyasi/dso202-{db,backend,frontend}:1.0` | `environments/<env>/values.yaml` |
+| Release images (Task 7) | `dso202-local/dso202-{frontend,backend}:1.1`, stand-ins built from [`stand-in-images/`](stand-in-images/README.md) | `environments/<env>/values.yaml` |
 | Smoke-test image | `busybox:1.37` | `charts/tasktracker/templates/smoke-test-job.yaml` |
 
 ## Layout
@@ -45,6 +46,7 @@ argocd/applications/             sealed-secrets, platform-{dev,staging}, tasktra
 platform/{dev,staging}/          namespace, quota + limits, RBAC, sealed credentials               (delivered by platform-*)
 charts/tasktracker/              the Assignment 3 chart, reduced to the workload layer             (delivered by tasktracker-*)
 environments/{dev,staging}/      values that differ per environment
+stand-in-images/                 source of the stand-in 1.1 release images used in Task 7 (not deployed by Argo CD)
 docs/evidence.md                 command output per task
 ```
 
@@ -91,6 +93,14 @@ for i in sarojsanyasi/dso202-db:1.0 sarojsanyasi/dso202-backend:1.0 sarojsanyasi
 done
 ```
 
+The Task 7 release images are not on any registry, so after a rebuild they must be built and loaded before Argo CD syncs dev and staging:
+
+```bash
+docker build -t dso202-local/dso202-frontend:1.1 stand-in-images/frontend
+docker build -t dso202-local/dso202-backend:1.1  stand-in-images/backend
+kind load docker-image dso202-local/dso202-frontend:1.1 dso202-local/dso202-backend:1.1 --name dso202-gitops
+```
+
 ## Cleanup
 
 ```bash
@@ -119,6 +129,8 @@ Do not delete the `root` Application to "clean up" inside a running cluster. Its
 | The DbBackup operator, its CRD, and the cluster-scoped ClusterRoles of Assignment 2/3 are not carried over | They are cluster-scoped, which the `dso202` project forbids (C8). Nothing in this assignment uses them. |
 | Chart objects keep fixed names (`db`, `backend`, `frontend`) | The backend reaches the database at host `db`, and the release name is fixed to `tasktracker` in both Applications. The smoke test calls `http://backend:8080/api/tasks`. |
 | The `1.0` images were loaded into kind from the host | Docker Hub returned "no match for platform in manifest" for `sarojsanyasi/dso202-db:1.0`. Section 13 of the brief prescribes this remedy. |
+| Task 7 uses stand-in `1.1` images, `dso202-local/dso202-{frontend,backend}:1.1`, built from `stand-in-images/` | The tutor-issued `1.1` tags were never published on Docker Hub, and the module tutor instructed me to build my own. Each one matches its section 8 release note, and the backend's undocumented `DB_POOL_MAX` requirement recreates the intended failure. They are loaded with `kind load`, so they must be loaded again after a rebuild. |
+| Task 7 pull requests were merged with merge commits, not squashed | Squash merging is only recommended. The revert therefore used `git revert -m 1`, as the brief describes for this case. |
 
 ## Written answers
 
@@ -188,7 +200,16 @@ Granting access then becomes a membership change in the identity provider, not a
 
 ### Q5: Why is `argocd app rollback` refused, what is the GitOps equivalent, and why is `git revert` preferred?
 
-*Pending: answered after Task 7, which waits for the tutor-issued `1.1` images.*
+**Why it is refused.** In Task 7 the command printed `rpc error: code = FailedPrecondition desc = rollback cannot be initiated when auto-sync is enabled`. `argocd app rollback` re-deploys a revision from the Application's history. It does not change Git. `tasktracker-dev` has automated sync with self-heal, so its desired state is "whatever `main` says". A rollback would make the live state differ from Git on purpose, and the next reconciliation would treat that as drift and sync it straight back to the bad commit. Argo CD therefore refuses rather than start a fight it would lose. Rollback is only allowed on an Application with manual sync, and even there it leaves the Application `OutOfSync` with Git, which breaks the principle that Git is the single source of truth.
+
+**The GitOps equivalent** is to change the desired state: commit to Git the content you want to run, and let the controller reconcile. In Task 7 that was `git revert -m 1 0a3267f`, merged through pull request #4. Dev returned to backend `1.0` with no command run against the cluster. The second option, used in pull request #5, is to fix forward: keep the new release and supply what it needs (`DB_POOL_MAX`) as a value. For staging, which follows a tag, the equivalent of a rollback is to set `targetRevision` back to the previous tag and sync.
+
+**Why `git revert` and not deleting the commit from history:**
+- **It records what happened.** `revert` adds a new commit that undoes the change. The history keeps both the bad commit and its reversal, with who did each and why. That is the audit trail GitOps promises (principle 2: versioned and immutable).
+- **It is safe for everyone else.** Removing the commit (`git reset` plus a force-push) rewrites `main`. Every clone, open branch and pull request based on the old history breaks or reintroduces the commit, and branch protection usually forbids force-pushes to `main`.
+- **It keeps deployed revisions resolvable.** Argo CD's history and any tags refer to commit SHAs. A rewritten history leaves those SHAs dangling, so "what was running at 22:46" can no longer be answered from Git.
+- **It goes through the same path as any change.** The revert was a reviewed pull request, picked up by Argo CD like every other commit. No special access was needed.
+- **It can be undone or replaced.** In Task 7, the release was later fixed forward on top of the revert, with nothing lost.
 
 ### Q6: (a) Single repository: two advantages, two disadvantages. (b) What is not under GitOps control after the rebuild?
 
