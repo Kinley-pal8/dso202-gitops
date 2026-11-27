@@ -1,0 +1,72 @@
+# =============================================================================
+# File        : charts/tasktracker/templates/frontend-nginx.yaml
+# Assignment  : DSO202 Assignment 4
+# Descriptor  : Unit I 1.5.3 - ConfigMaps mounted as files; Unit IV 4.3.2 - sync waves
+# Purpose     : The frontend's nginx configuration, mounted over the image's own
+#               /etc/nginx/nginx.conf. It is the image's file unchanged, plus a
+#               'location /api/' that forwards API calls to the backend Service
+#               inside the cluster.
+#
+# Why: the browser runs app.js, which calls <BACKEND_URL>/api/... . The backend
+# is a ClusterIP Service, so the browser cannot reach it directly. In Assignment
+# 3, an Ingress sent /api to the backend on the same host. This assignment has
+# no ingress controller (C9), so the frontend's nginx does that job instead.
+# With frontend.config.BACKEND_URL "." the calls are relative to the page
+# (./api/tasks): http://localhost:30080/api/... in dev, and the same path through
+# the staging port-forward. Both images (1.0 and 1.1) use this file unchanged.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx
+  labels:
+    {{- include "tasktracker.labels" (list . "frontend") | nindent 4 }}
+  annotations:
+    {{- include "tasktracker.wave" "frontend" | nindent 4 }}
+data:
+  nginx.conf: |
+    worker_processes auto;
+    pid /tmp/nginx.pid;
+
+    events {
+      worker_connections 1024;
+    }
+
+    http {
+      include       /etc/nginx/mime.types;
+      default_type  application/octet-stream;
+
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path       /tmp/proxy_temp;
+      fastcgi_temp_path     /tmp/fastcgi_temp;
+      uwsgi_temp_path       /tmp/uwsgi_temp;
+      scgi_temp_path        /tmp/scgi_temp;
+
+      sendfile on;
+      keepalive_timeout 65;
+
+      server {
+        listen 8080;
+        server_name _;
+
+        root /usr/share/nginx/html;
+        index index.html;
+
+        location = /config.js {
+          add_header Cache-Control "no-store";
+        }
+
+        # Added: API calls from the browser go to the backend Service.
+        # The backend is in wave 1 and the frontend in wave 2, so the Service
+        # name resolves when nginx starts.
+        location /api/ {
+          proxy_pass {{ .Values.frontend.apiUpstream }};
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location / {
+          try_files $uri $uri/ /index.html;
+        }
+      }
+    }

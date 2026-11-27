@@ -75,10 +75,16 @@ frontend:
     tag: "1.0"
   replicaCount: 1
   # C2: environment variables of the frontend container (frontend-config).
-  # BACKEND_URL is baked into config.js when the container starts. Empty means
-  # "same origin as the page".
+  # BACKEND_URL is baked into config.js when the container starts, and app.js
+  # calls <BACKEND_URL>/api/... from the browser. "." makes those calls relative
+  # to the page, so they reach this frontend's nginx, which forwards /api/ to
+  # the backend (templates/frontend-nginx.yaml). An empty value does not work:
+  # the image's entrypoint replaces an empty BACKEND_URL with
+  # http://localhost:8080, which on this host is the Argo CD port-forward.
   config:
-    BACKEND_URL: ""
+    BACKEND_URL: "."
+  # Where the frontend's nginx forwards /api/ (the backend Service, in-cluster).
+  apiUpstream: http://backend:8080
   # C10: the frontend Service is a NodePort and the port number is a value.
   # No default: each environment must choose its own (30080 dev, 30081 staging).
   service:

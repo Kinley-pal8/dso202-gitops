@@ -55,11 +55,12 @@
     },
     "frontend": {
       "type": "object",
-      "required": ["image", "resources", "service"],
+      "required": ["image", "resources", "service", "apiUpstream"],
       "properties": {
         "image": { "$ref": "#/definitions/image" },
         "replicaCount": { "type": "integer", "minimum": 0 },
         "config": { "$ref": "#/definitions/config" },
+        "apiUpstream": { "type": "string", "pattern": "^https?://" },
         "resources": { "$ref": "#/definitions/resources" },
         "service": {
           "type": "object",

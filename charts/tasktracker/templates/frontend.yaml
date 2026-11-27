@@ -47,6 +47,8 @@ spec:
         {{- include "tasktracker.labels" (list . "frontend") | nindent 8 }}
       annotations:
         checksum/config: {{ include "tasktracker.configChecksum" (list . "frontend") }}
+        # Rolls the Pods when the nginx configuration changes (it is read at start-up).
+        checksum/nginx: {{ include (print $.Template.BasePath "/frontend-nginx.yaml") . | sha256sum }}
     spec:
       containers:
         - name: frontend
@@ -60,6 +62,13 @@ spec:
             # C2: settings rendered from values.
             - configMapRef:
                 name: frontend-config
+          volumeMounts:
+            # Replaces the image's nginx.conf with frontend-nginx.yaml
+            # (adds the /api/ proxy to the backend).
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
           # C4: ready once nginx serves the page.
           readinessProbe:
             httpGet:
@@ -69,3 +78,7 @@ spec:
           # C7: requests and limits.
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: frontend-nginx
