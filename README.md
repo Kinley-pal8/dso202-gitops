@@ -15,7 +15,7 @@ This repository holds the whole desired state of the DSO202 Task Tracker: the Ar
 | Environment | Namespace | Follows | Sync | Frontend |
 |---|---|---|---|---|
 | dev | `dso202-dev` | branch `main` | automated, prune, self-heal | `http://localhost:30080` |
-| staging | `dso202-staging` | a Git tag (now `v1.2.0`) | manual | `kubectl port-forward -n dso202-staging svc/frontend 8081:8080`, then `http://localhost:8081` |
+| staging | `dso202-staging` | a Git tag (now `v1.2.1`) | manual | `kubectl port-forward -n dso202-staging svc/frontend 8081:8080`, then `http://localhost:8081` |
 
 Command output for every task is in [`docs/evidence.md`](docs/evidence.md).
 
@@ -131,6 +131,8 @@ Do not delete the `root` Application to "clean up" inside a running cluster. Its
 | The `1.0` images were loaded into kind from the host | Docker Hub returned "no match for platform in manifest" for `sarojsanyasi/dso202-db:1.0`. Section 13 of the brief prescribes this remedy. |
 | Task 7 uses stand-in `1.1` images, `dso202-local/dso202-{frontend,backend}:1.1`, built from `stand-in-images/` | The tutor-issued `1.1` tags were never published on Docker Hub, and the module tutor instructed me to build my own. Each one matches its section 8 release note, and the backend's undocumented `DB_POOL_MAX` requirement recreates the intended failure. They are loaded with `kind load`, so they must be loaded again after a rebuild. |
 | Task 7 pull requests were merged with merge commits, not squashed | Squash merging is only recommended. The revert therefore used `git revert -m 1`, as the brief describes for this case. |
+| The chart adds a `frontend-nginx` ConfigMap that forwards `/api/` to the backend, and `frontend.config.BACKEND_URL` is `"."` | The browser calls the API itself. Without an Ingress (C9) it had no route to the ClusterIP backend, and the image turns an empty `BACKEND_URL` into `http://localhost:8080`. See "Corrections after Task 9" in the evidence. |
+| The `dso202` whitelist also names `ReplicaSet` and `Pod`, which the chart does not render | Argo CD hides child objects of kinds the project does not permit, so without them no Pods or logs were visible, and Task 6's logs permission could not be used. This adds no capability, because Deployments, StatefulSets and Jobs already create Pods. |
 
 ## Written answers
 

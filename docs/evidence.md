@@ -285,7 +285,7 @@ kind: ServiceAccount
 kind: StatefulSet
 ```
 
-These are exactly the six kinds in `argocd/projects/dso202.yaml`: Deployment, StatefulSet, Service, ConfigMap, ServiceAccount and Job. No addition was needed. The PersistentVolumeClaim comes from the StatefulSet's `volumeClaimTemplates` and is created by the StatefulSet controller, not by Argo CD, so it does not need whitelisting.
+These are exactly the six kinds in `argocd/projects/dso202.yaml`: Deployment, StatefulSet, Service, ConfigMap, ServiceAccount and Job. No addition was needed for deploying. Two kinds the chart does not render, `ReplicaSet` and `Pod`, were added later so that Argo CD shows Pods and their logs; see [Corrections after Task 9](#corrections-after-task-9). The PersistentVolumeClaim comes from the StatefulSet's `volumeClaimTemplates` and is created by the StatefulSet controller, not by Argo CD, so it does not need whitelisting.
 
 ### Bootstrap and result
 
@@ -666,7 +666,7 @@ HTTP 404
 
 The frontend answers on `http://localhost:30080` (HTTP 200).
 
-The CRUD cycle was run with `curl` through a port-forwarded backend: create (id 4), read, list, update to `done`, delete (204), then read again (404). This is the same method as Assignment 1. The frontend image calls the API from the browser and its nginx does not proxy `/api`, so in-browser CRUD needs a backend reachable from the browser, which this NodePort-only design does not provide. The page itself is shown in `docs/screenshots/task5-dev-frontend.png`.
+The CRUD cycle was run with `curl` through a port-forwarded backend: create (id 4), read, list, update to `done`, delete (204), then read again (404). This is the same method as Assignment 1. At the time, the browser could not reach the API, because the image's nginx did not proxy `/api` and there is no Ingress. This was fixed after Task 9, and the CRUD cycle was repeated through `http://localhost:30080`; see [Corrections after Task 9](#corrections-after-task-9). `docs/screenshots/task5-dev-frontend.png` shows the page working after that fix.
 
 ### Staging: before and after the first manual sync
 
@@ -870,7 +870,7 @@ yes
 
 The reviewer password was set interactively and is kept outside the repository. Before the commit, `can-i get logs` answered `no`. After the commit and the re-apply of the bootstrap layer it answered `yes`. The other results matched the expectations: two Applications listed, `get` yes, `sync` no, and `platform` denied.
 
-Screenshot: `docs/screenshots/task6-reviewer-logs.png` (reviewer session in a private window showing Pod logs).
+Screenshots: `docs/screenshots/task6-reviewer-logs.png` (reviewer session in a private window, LOGS tab of the backend) and `docs/screenshots/task6-reviewer-userinfo.png` (the same session's User Info, showing `reviewer`). These logs could only be opened after the project fix described in [Corrections after Task 9](#corrections-after-task-9). Before that, Argo CD showed no Pods for `tasktracker-dev`, and `argocd app logs` printed nothing even for `admin`.
 
 ---
 
@@ -2329,3 +2329,112 @@ The rebuilt controller still has only the restored key, so the backup holds the 
 ### Not restored by Git: local Argo CD passwords
 
 The new installation generated a new `admin` initial password. The `reviewer` account came back from `argocd-cm` and its permissions from `argocd-rbac-cm`, both in Git, but it had no password: local account passwords are stored in the `argocd-secret` Secret, which is not in Git. The password was set again from the copy kept outside the repository. Afterwards, `account can-i get logs` returned `yes` and `can-i sync` returned `no`, so the RBAC from Git applies unchanged. See Q6 (b).
+
+---
+
+## Corrections after Task 9
+
+Two defects were found while taking the screenshots, after Task 9 was complete. Both were fixed through Git and are recorded here instead of being folded silently into the earlier sections.
+
+### 1. The browser could not reach the API
+
+**Symptom.** `http://localhost:30080` loaded and showed `release 1.1`, but the status pill read "backend unreachable" and the list showed `could not load the ledger (NetworkError ...)`.
+
+**Cause.** `app.js` runs in the browser and calls `<BACKEND_URL>/api/...`. The chart set `BACKEND_URL` to `""`, as in Assignment 3, where an Ingress put the frontend and `/api` on the same host. This assignment has no Ingress (C9). Also, the image's entrypoint uses `${BACKEND_URL:=http://localhost:8080}`, which replaces an *empty* value too. The page therefore called `http://localhost:8080/api/tasks`, which on this host is the Argo CD port-forward. The backend is a ClusterIP Service, so the browser had no way to reach it. Task 5's CRUD check used a backend port-forward and `curl`, so it did not exercise this path.
+
+**Fix** (commit `f111c3d`, no image change):
+- **Forward `/api/` from nginx:** a new ConfigMap `frontend-nginx` (`charts/tasktracker/templates/frontend-nginx.yaml`) holds the image's own `nginx.conf` plus `location /api/ { proxy_pass http://backend:8080; }`. It is mounted over `/etc/nginx/nginx.conf`, and a checksum annotation rolls the Pods when it changes.
+- **Make the calls relative:** `frontend.config.BACKEND_URL` is `"."`, so the browser calls `./api/...` on whatever host served the page. That is `localhost:30080` in dev and the port-forward in staging.
+- **Make the target a value:** the upstream is `frontend.apiUpstream` (validated by the schema), and the backend is in an earlier wave than the frontend (C5).
+
+Dev picked it up automatically. CRUD through the frontend's NodePort, which is the path the browser uses:
+
+```text
+# CRUD through the frontend NodePort, as the browser does (nginx forwards /api/ to the backend)
+$ curl -s http://localhost:30080/config.js | grep BACKEND_URL
+  BACKEND_URL: "."
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"title":"Browser path CRUD check"}' http://localhost:30080/api/tasks
+{"id":5,"title":"Browser path CRUD check","description":null,"status":"pending","created_at":"2026-11-27T18:12:57.284Z"}
+$ curl -s http://localhost:30080/api/tasks/5
+{"id":5,"title":"Browser path CRUD check","description":null,"status":"pending","created_at":"2026-11-27T18:12:57.284Z"}
+$ curl -s -X PUT -H 'Content-Type: application/json' -d '{"status":"done"}' http://localhost:30080/api/tasks/5
+{"id":5,"title":"Browser path CRUD check","description":null,"status":"done","created_at":"2026-11-27T18:12:57.284Z"}
+$ curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:30080/api/tasks/5
+204
+$ curl -s -o /dev/null -w '%{http_code}' http://localhost:30080/api/tasks/5
+404
+```
+
+Staging received it through the same gate as Task 7: tag `v1.2.1` on `f111c3d`, pull request #7 moving `targetRevision`, then a manual sync.
+
+```text
+$ argocd app get tasktracker-staging    # 00:30:01, before the sync
+  Target:           v1.2.1
+Sync Status:        OutOfSync from v1.2.1 (f111c3d)
+Health Status:      Healthy
+$ argocd app sync tasktracker-staging
+2026-11-28T00:30:01+06:00   apps  Deployment      dso202-staging              frontend    OutOfSync  Healthy              
+2026-11-28T00:30:01+06:00  batch         Job      dso202-staging  tasktracker-smoke-test             Healthy              
+2026-11-28T00:30:01+06:00          ConfigMap      dso202-staging       frontend-config    OutOfSync                       
+2026-11-28T00:30:01+06:00            Service      dso202-staging              frontend      Synced   Healthy              
+2026-11-28T00:30:01+06:00          ConfigMap      dso202-staging        frontend-nginx    OutOfSync  Missing              
+2026-11-28T00:30:06+06:00          ConfigMap  dso202-staging        frontend-nginx    Synced  Missing              
+2026-11-28T00:30:06+06:00          ConfigMap  dso202-staging       frontend-config    Synced                       
+2026-11-28T00:30:07+06:00   apps  Deployment  dso202-staging              frontend    Synced  Progressing              
+2026-11-28T00:30:08+06:00   apps  Deployment  dso202-staging              frontend    Synced  Healthy              
+2026-11-28T00:30:08+06:00          ConfigMap  dso202-staging        frontend-nginx    Synced  Missing              configmap/frontend-nginx created
+2026-11-28T00:30:08+06:00          ConfigMap  dso202-staging       frontend-config    Synced                       configmap/frontend-config configured
+2026-11-28T00:30:08+06:00            Service  dso202-staging              frontend    Synced  Healthy              service/frontend unchanged
+2026-11-28T00:30:08+06:00   apps  Deployment  dso202-staging              frontend    Synced  Healthy              deployment.apps/frontend configured
+2026-11-28T00:30:09+06:00  batch         Job  dso202-staging  tasktracker-smoke-test   Running   Synced    PostSync  job.batch/tasktracker-smoke-test created
+2026-11-28T00:30:13+06:00  batch         Job  dso202-staging  tasktracker-smoke-test  Succeeded   Synced    PostSync  Reached expected number of succeeded pods
+Sync Status:        Synced to v1.2.1 (f111c3d)
+Health Status:      Healthy
+Phase:              Succeeded
+Message:            successfully synced (no more tasks)
+       ConfigMap       dso202-staging  frontend-nginx          Synced                        configmap/frontend-nginx created
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config configured
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend unchanged
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend configured
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+
+# through kubectl port-forward -n dso202-staging svc/frontend 8081:8080
+$ curl -s http://localhost:8081/api/status
+{"status":"ok","db":"connected"}
+$ curl -s http://localhost:8081/api/tasks | grep -o '"title":"[^"]*"'
+"title":"Set up kind cluster"
+"title":"Write namespace manifest"
+"title":"Wire ConfigMap and Secret"
+"title":"Task 9 rebuild check (dso202-staging)"
+$ argocd app history tasktracker-staging
+SOURCE  https://github.com/Kinley-pal8/dso202-gitops.git
+ID      DATE                           REVISION
+0       2026-11-27 23:58:06 +0600 +06  v1.2.0 (95717b8)
+1       2026-11-28 00:30:13 +0600 +06  v1.2.1 (f111c3d)
+$ kubectl get applications -n argocd
+NAME                  SYNC STATUS   HEALTH STATUS
+platform-dev          Synced        Healthy
+platform-staging      Synced        Healthy
+root                  Synced        Healthy
+sealed-secrets        Synced        Healthy
+tasktracker-dev       Synced        Healthy
+tasktracker-staging   Synced        Healthy
+```
+
+### 2. Argo CD showed no Pods, so logs could not be opened
+
+**Symptom.** In the `tasktracker-dev` tree, every Deployment and the StatefulSet ended without children. There were no ReplicaSets or Pods to click, and therefore no LOGS tab for the reviewer (Task 6). This is also why `argocd app logs` printed nothing in Task 6.
+
+**Cause.** Argo CD leaves out of an Application's resource tree any child object whose kind the Application's project does not permit. The `dso202` whitelist named only the six kinds the chart renders, so the ReplicaSets and Pods created by the controllers were filtered out. The `sealed-secrets` Application, in the unrestricted `platform` project, showed its ReplicaSet and Pod normally, which confirmed the cause.
+
+**Fix** (commit `4ad3237`): `apps/ReplicaSet` and `""/Pod` were added to `namespaceResourceWhitelist` in `argocd/projects/dso202.yaml`, with a comment giving the reason. The project gains no capability from this: it may already create Deployments, StatefulSets and Jobs, which run any Pod spec. ResourceQuota, LimitRange, Role, RoleBinding and every cluster-scoped kind remain forbidden, so Drill 4 would behave the same. Afterwards:
+
+```text
+# Pod and ReplicaSet nodes in the tasktracker-dev resource tree (API: /api/v1/applications/tasktracker-dev/resource-tree)
+['Pod/backend-7db9c4769-nqpcr', 'Pod/db-0', 'Pod/frontend-695dbf8679-chnhx', 'Pod/tasktracker-smoke-test-wrb6h', 'ReplicaSet/backend-7db9c4769', 'ReplicaSet/frontend-695dbf8679', 'ReplicaSet/frontend-698c7d47fb']
+
+$ argocd --argocd-context reviewer app logs tasktracker-dev --kind Deployment --name backend --group apps --tail 5
+[config] loaded: db db:5432/taskdb, pool max 10
+[db] connected
+[server] listening on :8080
+```
