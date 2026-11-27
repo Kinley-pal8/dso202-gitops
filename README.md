@@ -213,4 +213,25 @@ Granting access then becomes a membership change in the identity provider, not a
 
 ### Q6: (a) Single repository: two advantages, two disadvantages. (b) What is not under GitOps control after the rebuild?
 
-*Pending: answered after Task 9.*
+**(a) One repository for the chart and the environment configuration.**
+
+Advantages:
+- **A change that spans chart and values is one reviewed commit.** For example, a new template together with the values that switch it on, or a release together with the configuration it needs. In Task 7, pull request #5 changed the image and added `DB_POOL_MAX` in one atomic change. If it had to be reverted, one `git revert` would remove both halves, with no window in which the chart and values of two repositories disagree.
+- **A tag freezes everything at once.** Staging follows `v1.2.0`, and that single reference pins the chart templates, the values and the Application definitions together. Promotion is moving one tag, and `argocd app history` names one SHA that fully describes what ran. The rebuild in Task 9 needed one clone and one key, and nothing else had to be versioned in step.
+
+Disadvantages:
+- **Every change to the chart reaches every environment that follows `main`, and all readers share one history.** Drill 4 showed it: a template added to the chart for any reason went straight to dev, and docs-only commits are new revisions for every Application too. With configuration separate from source, the chart is versioned and released on its own (for example as a packaged chart with a semantic version), and each environment opts into a chart version explicitly.
+- **Access cannot be separated by repository.** Anyone who may merge to `main` may change the chart, the values of every environment, and the Argo CD projects and Applications under `argocd/`, including widening the `dso202` whitelist that Drill 4 relied on. Separate repositories let a team give developers the application or chart repository and restrict the configuration repository to the people who approve releases. In a single repository this needs CODEOWNERS and branch protection to approximate.
+
+**(b) What is not under GitOps control after the rebuild, and how production teams handle it.**
+
+| Not under GitOps control | How a production team usually handles it |
+|---|---|
+| The cluster itself. `cluster/kind-cluster.yaml` is in Git, but `kind create cluster` was run by hand. | The cluster is provisioned by infrastructure as code (Terraform, Cluster API or Crossplane) from its own reviewed repository and pipeline. |
+| The bootstrap layer: the Argo CD installation and its two ConfigMap patches, applied with `kubectl apply -k`. | After a one-off install by the provisioning pipeline, Argo CD manages its own installation through an Application that points at the same bootstrap directory ("Argo CD manages Argo CD"). |
+| The root Application and the `platform` project, applied with `kubectl apply -f bootstrap/root`. | They are created by the same automated bootstrap, for example the Terraform Argo CD provider or Helm values, and are often owned by a central platform Argo CD that manages many clusters. |
+| The sealing key: backed up and restored by hand from `../dso202-keys/`. | The key, or the credentials themselves, live in a managed secret store (Vault, a cloud KMS or secrets manager). The bootstrap restores the key from there, or the External Secrets Operator replaces SealedSecrets altogether. |
+| The database contents, which were lost. | A managed database service, or scheduled backups (`pg_dump` or Velero snapshots to object storage, with point-in-time recovery), are restored as a separate, regularly rehearsed step. |
+| Argo CD's local passwords: the new `admin` initial password, and the `reviewer` password in `argocd-secret`, which had to be set again by hand. | Local accounts are disabled in favour of SSO (OIDC). Identities and group membership live in the identity provider, and only the group-to-role mapping is in Git. |
+| The images that `kind load` placed in the node: the `1.0` images that do not pull on this host, and the stand-in `1.1` images. | Images are built by CI from a tagged commit, pushed to a registry, and pulled by digest. Nothing is copied into nodes by hand. |
+| The manual sync of staging and the `kubectl port-forward` sessions. | Both are deliberate. A production promotion step is a pull request plus a sync started by an approved person or pipeline, and the UI is exposed through an Ingress with SSO instead of a port-forward. |

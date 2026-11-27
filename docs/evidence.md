@@ -1984,4 +1984,348 @@ one or more synchronization tasks are not valid: resource :ResourceQuota is not 
 
 ## Task 9: Rebuild from Git
 
-**Pending.** Done after Task 8.
+| Step | Time (local) |
+|---|---|
+| `kind delete cluster` | 23:50:15 |
+| `kind create cluster` started | **23:50:18** |
+| Sealing key restored, images loaded into the node | 23:50:57 |
+| Argo CD Deployments available | 23:55:39 |
+| `kubectl apply -f bootstrap/root` | 23:55:45 |
+| `tasktracker-dev` Healthy | 23:57:19 |
+| Dev frontend answers HTTP 200 | **23:57:29** |
+| Staging synced by hand, smoke test passed | 23:58:06 |
+| End (both environments verified, key backed up again) | 23:58:39 |
+
+**Elapsed time from `kind create cluster` to a working dev frontend: 7 min 11 s** (23:50:18 to 23:57:29). Most of it, 4 min 40 s, was Argo CD pulling its own images. From the hand-off to Git (`apply -f bootstrap/root`) to a healthy dev took 1 min 34 s. The whole rebuild, including the manual staging sync and the checks, took 8 min 21 s.
+
+### Step 1: fresh key backup and the state to compare against
+
+```text
+$ kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > ../dso202-keys/sealing-key.backup.yaml
+$ chmod 600 ../dso202-keys/sealing-key.backup.yaml
+$ kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key
+NAME                      TYPE                DATA   AGE
+sealed-secrets-keyn9n8l   kubernetes.io/tls   2      2d22h
+$ ls -l ../dso202-keys/sealing-key.backup.yaml
+-rw------- 7087 ../dso202-keys/sealing-key.backup.yaml
+$ git status --short && git rev-parse HEAD
+ M docs/evidence.md
+681af81cf73b667a6acb3b4ec6092433060851c8
+$ kubectl get applications -n argocd
+NAME                  SYNC STATUS   HEALTH STATUS
+platform-dev          Synced        Healthy
+platform-staging      Synced        Healthy
+root                  Synced        Healthy
+sealed-secrets        Synced        Healthy
+tasktracker-dev       Synced        Healthy
+tasktracker-staging   Synced        Healthy
+$ kubectl get applications -n argocd -o custom-columns=NAME:.metadata.name,REVISION:.spec.source.targetRevision,SYNCED-TO:.status.sync.revision
+NAME                  REVISION   SYNCED-TO
+platform-dev          main       746b7879a01b4c89f94b311905ec5cad43c9a4de
+platform-staging      main       746b7879a01b4c89f94b311905ec5cad43c9a4de
+root                  main       746b7879a01b4c89f94b311905ec5cad43c9a4de
+sealed-secrets        2.20.0     2.20.0
+tasktracker-dev       main       746b7879a01b4c89f94b311905ec5cad43c9a4de
+tasktracker-staging   v1.2.0     95717b8d7d238816c3cb70922ae8fc5a86feef3e
+$ git status --short && git rev-parse HEAD     # after pushing a wording fix to docs/evidence.md
+e15fac33889e7e725957279a94287821a4ae5b91
+```
+
+### Step 2: delete and create the cluster
+
+```text
+$ date
+Fri Nov 27 11:50:15 PM +06 2026
+$ kind delete cluster --name dso202-gitops
+Deleting cluster "dso202-gitops" ...
+Deleted nodes: ["dso202-gitops-control-plane"]
+$ date    # start of rebuild
+Fri Nov 27 11:50:18 PM +06 2026
+$ kind create cluster --name dso202-gitops --config cluster/kind-cluster.yaml
+Creating cluster "dso202-gitops" ...
+ • Ensuring node image (kindest/node:v1.36.1) 🖼  ...
+ ✓ Ensuring node image (kindest/node:v1.36.1) 🖼
+ • Preparing nodes 📦   ...
+ ✓ Preparing nodes 📦 
+ • Writing configuration 📜  ...
+ ✓ Writing configuration 📜
+ • Starting control-plane 🕹️  ...
+ ✓ Starting control-plane 🕹️
+ • Installing CNI 🔌  ...
+ ✓ Installing CNI 🔌
+ • Installing StorageClass 💾  ...
+ ✓ Installing StorageClass 💾
+Set kubectl context to "kind-dso202-gitops"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-dso202-gitops
+
+Not sure what to do next? 😅  Check out https://kind.sigs.k8s.io/docs/user/quick-start/
+```
+
+### Step 3: restore the sealing key before the controller exists
+
+```text
+$ kubectl create namespace sealed-secrets
+namespace/sealed-secrets created
+$ kubectl apply -f ../dso202-keys/sealing-key.backup.yaml
+secret/sealed-secrets-keyn9n8l created
+$ kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key
+NAME                      TYPE                DATA   AGE
+sealed-secrets-keyn9n8l   kubernetes.io/tls   2      0s
+
+### Image load (README: 'If Docker Hub refuses an image' and the Task 7 stand-ins)
+$ kind load docker-image sarojsanyasi/dso202-db:1.0 sarojsanyasi/dso202-backend:1.0 sarojsanyasi/dso202-frontend:1.0 dso202-local/dso202-frontend:1.1 dso202-local/dso202-backend:1.1 --name dso202-gitops
+Image: "sarojsanyasi/dso202-db:1.0" with ID "sha256:461137a233fb66cf712ca67ff9a51c526a8ec31f4e227b2550b8371b9e8a6792" not yet present on node "dso202-gitops-control-plane", loading...
+Image: "sarojsanyasi/dso202-backend:1.0" with ID "sha256:284f06ef22055e3a36e5d422877d7eb5e63205136c3d236aa79871d98183e9d6" not yet present on node "dso202-gitops-control-plane", loading...
+Image: "sarojsanyasi/dso202-frontend:1.0" with ID "sha256:c58f95e625a3a2303155449c37fbb45f037ccaca453091116eb8dea0ce70349e" not yet present on node "dso202-gitops-control-plane", loading...
+Image: "dso202-local/dso202-frontend:1.1" with ID "sha256:be3a64fa7eccaebcfaabf18b16cb35b647c60d51bc3cc007bb5e67d6cd89d4bb" not yet present on node "dso202-gitops-control-plane", loading...
+Image: "dso202-local/dso202-backend:1.1" with ID "sha256:aad21b8ca67accc0f51b50c2ad39844c342fcb72d2c6dc6f810ebab69f79081f" not yet present on node "dso202-gitops-control-plane", loading...
+$ date
+Fri Nov 27 11:50:57 PM +06 2026
+```
+
+The node pulls every image again on a new cluster. As in Task 5, Docker Hub refuses `sarojsanyasi/dso202-db:1.0` on this host ("no match for platform in manifest"), and the stand-in `1.1` images are on no registry. All five were therefore loaded from the host with `kind load`, as documented in the README. This changes no tag and no file in Git.
+
+### Step 4: the two bootstrap steps (nothing else was applied by hand)
+
+```text
+$ kubectl apply -k bootstrap/argocd --server-side --force-conflicts
+statefulset.apps/argocd-application-controller serverside-applied
+networkpolicy.networking.k8s.io/argocd-application-controller-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-applicationset-controller-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-dex-server-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-notifications-controller-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-redis-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-repo-server-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-server-network-policy serverside-applied
+(output shortened to the last 8 lines)
+$ kubectl wait --for=condition=Available deployment --all -n argocd --timeout=600s
+deployment.apps/argocd-applicationset-controller condition met
+deployment.apps/argocd-dex-server condition met
+deployment.apps/argocd-notifications-controller condition met
+deployment.apps/argocd-redis condition met
+deployment.apps/argocd-repo-server condition met
+deployment.apps/argocd-server condition met
+$ date
+Fri Nov 27 11:55:39 PM +06 2026
+$ kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=600s
+partitioned roll out complete: 1 new pods have been updated...
+$ kubectl apply -f bootstrap/root    # at 23:55:45
+appproject.argoproj.io/platform created
+Warning: metadata.finalizers: "resources-finalizer.argocd.argoproj.io": prefer a domain-qualified finalizer name including a path (/) to avoid accidental conflicts with other finalizer writers
+application.argoproj.io/root created
+```
+
+### Step 5: Applications appear in wave order
+
+```text
+$ kubectl get applications -n argocd -w    (local time, state changes only; root applied at 23:55:45)
+23:55:46 NAME   SYNC STATUS   HEALTH STATUS
+23:55:46 root                 
+23:55:50 root   OutOfSync     Missing
+23:55:50 root   OutOfSync     Healthy
+23:55:52 sealed-secrets                 
+23:55:52 root             OutOfSync     Progressing
+23:55:59 sealed-secrets   OutOfSync     Missing
+23:55:59 root             OutOfSync     Healthy
+23:56:00 sealed-secrets   OutOfSync     Progressing
+23:56:00 sealed-secrets   Synced        Progressing
+23:56:00 root             OutOfSync     Progressing
+23:56:56 sealed-secrets   Synced        Healthy
+23:56:58 root             OutOfSync     Healthy
+23:56:58 platform-dev                   
+23:56:58 platform-staging                 
+23:56:58 root               OutOfSync     Progressing
+23:56:58 platform-staging   OutOfSync     Missing
+23:56:58 platform-dev       OutOfSync     Missing
+23:56:59 platform-dev       OutOfSync     Healthy
+23:56:59 root               OutOfSync     Healthy
+23:56:59 platform-staging   OutOfSync     Healthy
+23:56:59 platform-staging   Synced        Healthy
+23:56:59 platform-dev       Synced        Progressing
+23:56:59 platform-dev       Synced        Healthy
+23:56:59 root               OutOfSync     Progressing
+23:56:59 root               OutOfSync     Healthy
+23:57:00 tasktracker-dev                  
+23:57:00 tasktracker-staging                 
+23:57:00 root                  Synced        Progressing
+23:57:01 tasktracker-dev       OutOfSync     Missing
+23:57:01 tasktracker-dev       OutOfSync     Healthy
+23:57:01 tasktracker-dev       OutOfSync     Progressing
+23:57:03 tasktracker-staging   OutOfSync     Missing
+23:57:12 tasktracker-dev       OutOfSync     Healthy
+23:57:12 root                  Synced        Healthy
+23:57:12 tasktracker-dev       OutOfSync     Progressing
+23:57:12 root                  Synced        Progressing
+23:57:18 tasktracker-dev       OutOfSync     Healthy
+23:57:18 root                  Synced        Healthy
+23:57:18 tasktracker-dev       Synced        Progressing
+23:57:18 root                  Synced        Progressing
+23:57:19 tasktracker-dev       Synced        Healthy
+23:57:19 root                  Synced        Healthy
+
+$ kubectl get sealedsecrets -A
+NAMESPACE        NAME                      STATUS   SYNCED   AGE
+dso202-dev       tasktracker-credentials            True     30s
+dso202-staging   tasktracker-credentials            True     30s
+$ kubectl get secret tasktracker-credentials -n dso202-dev -n dso202-dev
+NAME                      TYPE     DATA   AGE
+tasktracker-credentials   Opaque   4      30s
+NAME                      TYPE     DATA   AGE
+tasktracker-credentials   Opaque   4      30s
+$ kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key    # still only the restored key
+NAME                      TYPE                DATA   AGE
+sealed-secrets-keyn9n8l   kubernetes.io/tls   2      6m45s
+$ kubectl logs -n sealed-secrets deploy/sealed-secrets-controller | grep -i -E 'key|unseal' | head -5
+time=2026-11-27T17:56:55.062Z level=INFO msg="Searching for existing private keys"
+time=2026-11-27T17:56:55.071Z level=INFO msg="registered private key" secretname=sealed-secrets-keyn9n8l
+time=2026-11-27T17:56:59.468Z level=INFO msg=Updating key=dso202-staging/tasktracker-credentials
+time=2026-11-27T17:56:59.504Z level=INFO msg="Event(v1.ObjectReference{Kind:\"SealedSecret\", Namespace:\"dso202-staging\", Name:\"tasktracker-credentials\", UID:\"cdefc22e-b2ff-4bae-b3f1-da6fcdd97eaa\", APIVersion:\"bitnami.com/v1alpha1\", ResourceVersion:\"1484\", FieldPath:\"\"}): type: 'Normal' reason: 'Unsealed' SealedSecret unsealed successfully"
+time=2026-11-27T17:56:59.524Z level=INFO msg=Updating key=dso202-dev/tasktracker-credentials
+
+$ kubectl get pods -n dso202-dev
+NAME                           READY   STATUS              RESTARTS   AGE
+backend-7db9c4769-nqpcr        1/1     Running             0          17s
+db-0                           1/1     Running             0          28s
+frontend-698c7d47fb-jhkzc      1/1     Running             0          11s
+tasktracker-smoke-test-5qj2m   0/1     ContainerCreating   0          9s
+$ curl -s -o /dev/null -w '%{http_code}' http://localhost:30080/ ; date
+dev frontend HTTP 200
+Fri Nov 27 11:57:29 PM +06 2026
+```
+
+Order in which the Applications became `Healthy`, after `bootstrap/root` was applied at 23:55:45:
+
+| Wave | Application | Synced / Healthy at | After root applied |
+|---|---|---|---|
+| -3 | `dso202` AppProject (not an Application) | created with the first root sync | |
+| -2 | `sealed-secrets` | 23:56:56 | 71 s |
+| -1 | `platform-staging`, `platform-dev` | 23:56:59 | 74 s |
+| 0 | `tasktracker-dev` | 23:57:19 | 94 s |
+| 0 | `tasktracker-staging` | `OutOfSync / Missing` until the manual sync in step 6 | |
+
+Each wave started only after the previous one was healthy: `platform-*` appeared at 23:56:58, two seconds after `sealed-secrets` became healthy. `tasktracker-*` appeared at 23:57:00.
+
+**The restore is proven.** The controller logged `Searching for existing private keys` and then `registered private key secretname=sealed-secrets-keyn9n8l`, the same key name as before the rebuild. Only that one key exists, so no new key was generated. Both SealedSecrets report `SYNCED True` ("unsealed successfully"), and `tasktracker-credentials` exists in both namespaces. Those are the files sealed in Task 4 against the old cluster, unchanged in Git.
+
+`root` reached `Synced / Healthy` while staging was still `Missing`, so it did not stay `Progressing` until staging was synced. That is the same behaviour as in Task 5: Argo CD leaves a child Application whose health is `Missing` out of the parent's health.
+
+### Step 6: sign in again and sync staging
+
+```text
+$ kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+$ argocd admin initial-password -n argocd      (new password; not recorded)
+$ argocd login localhost:8080 --username admin --insecure
+'admin:login' logged in successfully
+Context 'localhost:8080' updated
+$ argocd app get tasktracker-staging    # before the sync
+  Target:           v1.2.0
+Sync Status:        OutOfSync from v1.2.0 (95717b8)
+Health Status:      Missing
+$ argocd app sync tasktracker-staging    # at 23:57:42
+Health Status:      Healthy
+
+Operation:          Sync
+Sync Revision:      95717b8d7d238816c3cb70922ae8fc5a86feef3e
+Phase:              Succeeded
+Start:              2026-11-27 23:57:43 +0600 +06
+Finished:           2026-11-27 23:58:06 +0600 +06
+Duration:           23s
+Message:            successfully synced (no more tasks)
+
+GROUP  KIND            NAMESPACE       NAME                    STATUS     HEALTH   HOOK      MESSAGE
+       ConfigMap       dso202-staging  db-config               Synced                        configmap/db-config created
+       Service         dso202-staging  db                      Synced     Healthy            service/db created
+apps   StatefulSet     dso202-staging  db                      Synced     Healthy            statefulset rolling update complete 1 pods at revision db-7c88c9db6c...
+       ServiceAccount  dso202-staging  backend-sa              Synced                        serviceaccount/backend-sa created
+       ConfigMap       dso202-staging  backend-config          Synced                        configmap/backend-config created
+       Service         dso202-staging  backend                 Synced     Healthy            service/backend created
+apps   Deployment      dso202-staging  backend                 Synced     Healthy            deployment.apps/backend created
+       ConfigMap       dso202-staging  frontend-config         Synced                        configmap/frontend-config created
+       Service         dso202-staging  frontend                Synced     Healthy            service/frontend created
+apps   Deployment      dso202-staging  frontend                Synced     Healthy            deployment.apps/frontend created
+batch  Job             dso202-staging  tasktracker-smoke-test  Succeeded  Synced   PostSync  Reached expected number of succeeded pods
+```
+
+### Step 7: verify both environments
+
+```text
+$ kubectl get applications -n argocd -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.spec.source.targetRevision,SYNCED-TO:.status.sync.revision
+NAME                  SYNC     HEALTH    REVISION   SYNCED-TO
+platform-dev          Synced   Healthy   main       e15fac33889e7e725957279a94287821a4ae5b91
+platform-staging      Synced   Healthy   main       e15fac33889e7e725957279a94287821a4ae5b91
+root                  Synced   Healthy   main       e15fac33889e7e725957279a94287821a4ae5b91
+sealed-secrets        Synced   Healthy   2.20.0     2.20.0
+tasktracker-dev       Synced   Healthy   main       e15fac33889e7e725957279a94287821a4ae5b91
+tasktracker-staging   Synced   Healthy   v1.2.0     95717b8d7d238816c3cb70922ae8fc5a86feef3e
+$ kubectl get jobs -A -l app.kubernetes.io/name=tasktracker 2>/dev/null || kubectl get jobs -n dso202-dev -n dso202-staging
+NAME                     STATUS     COMPLETIONS   DURATION   AGE
+tasktracker-smoke-test   Complete   1/1           16s        59s
+NAME                     STATUS     COMPLETIONS   DURATION   AGE
+tasktracker-smoke-test   Complete   1/1           4s         17s
+$ kubectl logs -n dso202-dev job/tasktracker-smoke-test
+[{"id":1,"title":"Set up kind cluster","description":"Bring up the local cluster from Practical 1","status":"done","created_at":"2026-11-27T17:57:08.378Z"},{"id":2,"title":"Write namespace manifest","description":"One namespace for all assignment resources","status":"in_progress","created_at":"2026-11-27T17:57:08.378Z"},{"id":3,"title":"Wire ConfigMap and Secret","description":"DB_* and POSTGRES_* must carry matching values","status":"pending","created_at":"2026-11-27T17:57:08.378Z"}]$ kubectl logs -n dso202-staging job/tasktracker-smoke-test
+[{"id":1,"title":"Set up kind cluster","description":"Bring up the local cluster from Practical 1","status":"done","created_at":"2026-11-27T17:57:50.774Z"},{"id":2,"title":"Write namespace manifest","description":"One namespace for all assignment resources","status":"in_progress","created_at":"2026-11-27T17:57:50.774Z"},{"id":3,"title":"Wire ConfigMap and Secret","description":"DB_* and POSTGRES_* must carry matching values","status":"pending","created_at":"2026-11-27T17:57:50.774Z"}]
+# dev frontend
+$ curl -s http://localhost:30080 | grep -o 'release 1.1'
+release 1.1
+# staging frontend via kubectl port-forward -n dso202-staging svc/frontend 8081:8080
+$ curl -s -o /dev/null -w '%{http_code}' http://localhost:8081/ && curl -s http://localhost:8081 | grep -o 'release 1.1'
+staging frontend HTTP 200
+release 1.1
+
+# create one task in dso202-dev, through kubectl port-forward -n dso202-dev svc/backend 18080:8080
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"title":"Task 9 rebuild check (dso202-dev)"}' http://localhost:18080/api/tasks
+{"id":4,"title":"Task 9 rebuild check (dso202-dev)","description":null,"status":"pending","created_at":"2026-11-27T17:58:25.569Z"}
+$ curl -s http://localhost:18080/api/tasks | grep -o '"title":"[^"]*"'
+"title":"Set up kind cluster"
+"title":"Write namespace manifest"
+"title":"Wire ConfigMap and Secret"
+"title":"Task 9 rebuild check (dso202-dev)"
+
+# create one task in dso202-staging, through kubectl port-forward -n dso202-staging svc/backend 18080:8080
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"title":"Task 9 rebuild check (dso202-staging)"}' http://localhost:18080/api/tasks
+{"id":4,"title":"Task 9 rebuild check (dso202-staging)","description":null,"status":"pending","created_at":"2026-11-27T17:58:29.609Z"}
+$ curl -s http://localhost:18080/api/tasks | grep -o '"title":"[^"]*"'
+"title":"Set up kind cluster"
+"title":"Write namespace manifest"
+"title":"Wire ConfigMap and Secret"
+"title":"Task 9 rebuild check (dso202-staging)"
+
+$ date
+Fri Nov 27 11:58:30 PM +06 2026
+```
+
+- **Both environments:** `Synced / Healthy`. Both smoke tests completed. Both frontends answer HTTP 200 and show `release 1.1`.
+- **Staging:** at `v1.2.0` (`95717b8`), the same tag as before the rebuild. The other Applications follow `main` (`e15fac3`, the HEAD recorded in step 1).
+- **Databases work:** one task was created in each environment (id 4).
+- **Database contents were lost, as the brief states:** each database was re-initialised from the image's seed data. The seed rows carry `created_at` times from the rebuild (17:57 UTC), and the tasks created in Task 5 are gone.
+
+### Step 8: fresh backup from the rebuilt cluster
+
+```text
+$ kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > ../dso202-keys/sealing-key.backup.yaml && chmod 600 ../dso202-keys/sealing-key.backup.yaml
+$ kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key
+NAME                      TYPE                DATA   AGE
+sealed-secrets-keyn9n8l   kubernetes.io/tls   2      7m55s
+$ ls -l ../dso202-keys/sealing-key.backup.yaml
+-rw------- 14199 ../dso202-keys/sealing-key.backup.yaml
+$ git status --short --ignored ../dso202-keys 2>/dev/null; git check-ignore -v secrets-plain/dev.env
+.gitignore:14:secrets-plain/	secrets-plain/dev.env
+$ kubectl get deploy -n dso202-dev -n dso202-staging -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
+dso202-dev   backend    dso202-local/dso202-backend:1.1
+dso202-dev   frontend   dso202-local/dso202-frontend:1.1
+dso202-dev   db         sarojsanyasi/dso202-db:1.0
+dso202-staging   backend    dso202-local/dso202-backend:1.1
+dso202-staging   frontend   dso202-local/dso202-frontend:1.1
+dso202-staging   db         sarojsanyasi/dso202-db:1.0
+$ date    # end
+Fri Nov 27 11:58:39 PM +06 2026
+```
+
+The rebuilt controller still has only the restored key, so the backup holds the same key. The file is larger than in step 1 because the Secret now carries the `kubectl.kubernetes.io/last-applied-configuration` annotation from the restore in step 3.
+
+### Not restored by Git: local Argo CD passwords
+
+The new installation generated a new `admin` initial password. The `reviewer` account came back from `argocd-cm` and its permissions from `argocd-rbac-cm`, both in Git, but it had no password: local account passwords are stored in the `argocd-secret` Secret, which is not in Git. The password was set again from the copy kept outside the repository. Afterwards, `account can-i get logs` returned `yes` and `can-i sync` returned `no`, so the RBAC from Git applies unchanged. See Q6 (b).
