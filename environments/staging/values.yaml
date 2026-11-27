@@ -22,7 +22,14 @@ database:
 backend:
   replicaCount: 1
   image:
-    tag: "1.0"
+    # Stand-in 1.1 image built from stand-in-images/backend (tutor-approved).
+    repository: dso202-local/dso202-backend
+    tag: "1.1"
+  # C2: backend 1.1 exits at start-up without DB_POOL_MAX (Task 7, step 6:
+  # "[config] FATAL: required environment variable DB_POOL_MAX is not set").
+  # Merged into the chart's backend.config and rendered into backend-config.
+  config:
+    DB_POOL_MAX: "10"
 
 frontend:
   replicaCount: 1
