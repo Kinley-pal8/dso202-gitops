@@ -1881,7 +1881,7 @@ $ argocd app history platform-dev | tail -3
 
 ### Drill 4: the project rejects a resource it does not permit
 
-**Prediction.** Tasktracker-dev refuses to sync. Its status shows that the ResourceQuota kind is not permitted in project dso202, and nothing is created. Staging is unaffected because it reads tag v1.2.0, which does not contain the file. Reverting the commit returns dev to Synced/Healthy.
+**Prediction.** `tasktracker-dev` refuses to sync. Its status shows that the ResourceQuota kind is not permitted in project dso202, and nothing is created. Staging is unaffected because it reads tag v1.2.0, which does not contain the file. Reverting the commit returns dev to Synced/Healthy.
 
 Listing 17 was saved as `charts/tasktracker/templates/drill-quota.yaml`, committed and pushed to `main`.
 
